@@ -89,6 +89,23 @@ export function SettingsPanel({ settings, onChange }: Props) {
             </select>
           </div>
           <div className="field">
+            <label htmlFor="timezone">Usage-day timezone</label>
+            <select
+              id="timezone"
+              value={settings.timezone}
+              onChange={(e) => void onChange({ timezone: e.target.value })}
+            >
+              <option value="system">System timezone</option>
+              <option value="UTC">UTC</option>
+              <option value="Asia/Calcutta">India (Asia/Calcutta)</option>
+              <option value="America/New_York">New York</option>
+              <option value="America/Los_Angeles">Los Angeles</option>
+              <option value="Europe/London">London</option>
+              <option value="Europe/Berlin">Berlin</option>
+              <option value="Asia/Tokyo">Tokyo</option>
+            </select>
+          </div>
+          <div className="field">
             <label htmlFor="retention">Local retention (days)</label>
             <select
               id="retention"

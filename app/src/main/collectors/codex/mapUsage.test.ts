@@ -5,6 +5,7 @@ import type { AppSettings } from '../../../shared/types'
 const settings: AppSettings = {
   display_currency: 'USD',
   locale: 'en-US',
+  timezone: 'system',
   notify_enabled: true,
   network_quota_refresh: true,
   retention_days: 90,

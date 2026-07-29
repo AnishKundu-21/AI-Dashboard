@@ -78,6 +78,8 @@ function parseSessionFile(path: string): SessionRow | null {
   let tokensIn: number | null = null
   let tokensOut: number | null = null
   let tokensTotal: number | null = null
+  let tokensCached: number | null = null
+  let tokensReasoning: number | null = null
   let durationMs: number | null = null
   let status: SessionRow['status'] = 'unknown'
 
@@ -127,6 +129,13 @@ function parseSessionFile(path: string): SessionRow | null {
           if (typeof total.input_tokens === 'number') tokensIn = total.input_tokens
           if (typeof total.output_tokens === 'number') tokensOut = total.output_tokens
           if (typeof total.total_tokens === 'number') tokensTotal = total.total_tokens
+          const cached = numberOrNull(total.cached_input_tokens)
+          const cacheWrite = numberOrNull(total.cache_write_input_tokens)
+          tokensCached =
+            cached != null || cacheWrite != null
+              ? (cached ?? 0) + (cacheWrite ?? 0)
+              : null
+          tokensReasoning = numberOrNull(total.reasoning_output_tokens)
         }
       }
       if (subtype === 'task_complete') {
@@ -157,11 +166,22 @@ function parseSessionFile(path: string): SessionRow | null {
     tokens_in: tokensIn,
     tokens_out: tokensOut,
     tokens_total: tokensTotal,
+    tokens_cached: tokensCached,
+    tokens_reasoning: tokensReasoning,
+    model_calls: null,
     api_equiv_usd: apiEquivUsd(model, tokensTotal),
+    provider_cost_usd: null,
+    api_duration_ms: null,
     duration_ms: durationMs,
     status,
     started_at: startedAt,
     ended_at: endedAt,
     source: 'codex:sessions.jsonl'
   }
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : null
 }

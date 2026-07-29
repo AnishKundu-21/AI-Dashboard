@@ -515,6 +515,13 @@ input:focus {
   margin-top: 20px;
 }
 
+.quota-windows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .mini {
   padding: 10px;
   border: 1px solid var(--line-soft);
@@ -966,9 +973,26 @@ tr:hover td {
   line-height: 1.45;
 }
 
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.health-card { padding: 16px; }
+.health-head { display: flex; align-items: center; justify-content: space-between; }
+.health-card p { color: var(--muted); font-size: 11px; margin: 8px 0; }
+.health-card .health-error { color: var(--danger); }
+.active-filters { display: flex; gap: 8px; padding: 0 14px 10px; }
+.active-filters button { border: 1px solid var(--line-soft); border-radius: 999px; background: #202631; color: var(--text); padding: 5px 9px; cursor: pointer; }
+.load-more { margin: 12px; }
+.model-row { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.model-row.selected { background: rgba(20, 184, 166, 0.12); }
+
 @media (max-width: 1080px) {
   .settings-grid,
   .plan-grid,
+  .health-grid,
   .donut-wrap {
     grid-template-columns: 1fr;
   }

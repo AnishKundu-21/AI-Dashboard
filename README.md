@@ -28,7 +28,7 @@ This project builds that pane as a **desktop app** that reuses the logins you al
 | Live data research | **Validated** for Grok + Codex; Claude when CLI logged in |
 | Worked example | [Real demo run (Grok 33% / Codex plus 0% / Claude n/a)](#worked-example--real-demo-run-2026-07-28) |
 | Research demos | Demo files at project root |
-| Electron app (`app/`) | **Phase 3** — analytics parity + settings + pricing (`app/`) |
+| Electron app (`app/`) | **Phase 4** — real-time collectors, diagnostics, security, and Windows packaging (`app/`) |
 
 Read **[`PLAN.md`](./PLAN.md)** for full architecture, phases, IPC, schema, risks, and collaboration rules.
 
@@ -62,7 +62,7 @@ Read **[`PLAN.md`](./PLAN.md)** for full architecture, phases, IPC, schema, risk
 
 - Multi-machine sync
 - Mobile app
-- Auto-update / code signing polish
+- Hosted update feed and production signing certificate provisioning (the app-side hooks are implemented)
 - Extra providers beyond the three above
 
 ---

@@ -24,8 +24,12 @@ export interface GrokUsageTotals {
   tokensIn: number | null
   tokensOut: number | null
   tokensTotal: number | null
+  tokensCached: number | null
+  tokensReasoning: number | null
+  modelCalls: number | null
   model: string | null
   apiDurationMs: number | null
+  providerCostUsd: number | null
 }
 
 interface CachedUsage {
@@ -62,6 +66,9 @@ export function collectGrokSessions(home = getGrokHome()): SessionRow[] {
 
     const updatesPath = join(entry.path, 'updates.jsonl')
     const usage = readUsageFile(updatesPath)
+    // Summary/index shells contain no measured usage and previously polluted
+    // totals/session tables with zero-value records.
+    if (usage.tokensTotal == null) continue
     const cwd =
       stringValue(info?.cwd) ??
       stringValue(summary.git_root_dir) ??
@@ -94,53 +101,17 @@ export function collectGrokSessions(home = getGrokHome()): SessionRow[] {
       tokens_in: usage.tokensIn,
       tokens_out: usage.tokensOut,
       tokens_total: usage.tokensTotal,
+      tokens_cached: usage.tokensCached,
+      tokens_reasoning: usage.tokensReasoning,
+      model_calls: usage.modelCalls,
       api_equiv_usd: apiEquivUsd(model, usage.tokensTotal),
+      provider_cost_usd: usage.providerCostUsd,
+      api_duration_ms: usage.apiDurationMs,
       duration_ms: durationMs,
       status: active.has(id) ? 'unknown' : 'complete',
       started_at: startedAt,
       ended_at: active.has(id) ? null : endedAt,
       source: 'grok:session-files'
-    })
-  }
-
-  // Indexed metadata covers older sessions whose directories may be absent.
-  for (const [id, row] of indexed) {
-    if (seen.has(id) || rows.length >= MAX_SESSIONS) continue
-    seen.add(id)
-    rows.push({
-      id: `grok:${id}`,
-      provider: 'grok',
-      project: projectNameFromCwd(row.cwd),
-      model: 'Grok',
-      tokens_in: null,
-      tokens_out: null,
-      tokens_total: null,
-      api_equiv_usd: null,
-      duration_ms: null,
-      status: active.has(id) ? 'unknown' : 'complete',
-      started_at: row.updated_at,
-      ended_at: active.has(id) ? null : row.updated_at,
-      source: 'grok:session-search'
-    })
-  }
-
-  // Include a newly opened session before it reaches the index or summary file.
-  for (const [id, row] of active) {
-    if (seen.has(id) || rows.length >= MAX_SESSIONS) continue
-    rows.push({
-      id: `grok:${id}`,
-      provider: 'grok',
-      project: projectNameFromCwd(row.cwd),
-      model: 'Grok',
-      tokens_in: null,
-      tokens_out: null,
-      tokens_total: null,
-      api_equiv_usd: null,
-      duration_ms: null,
-      status: 'unknown',
-      started_at: row.opened_at,
-      ended_at: null,
-      source: 'grok:active-sessions'
     })
   }
 
@@ -153,6 +124,10 @@ export function parseGrokUsageUpdates(text: string): GrokUsageTotals {
   let tokensOut = 0
   let tokensTotal = 0
   let apiDurationMs = 0
+  let tokensCached = 0
+  let tokensReasoning = 0
+  let modelCalls = 0
+  let providerCostTicks = 0
   let foundUsage = false
   const observedModels: string[] = []
 
@@ -179,14 +154,22 @@ export function parseGrokUsageUpdates(text: string): GrokUsageTotals {
     tokensOut += output ?? 0
     tokensTotal += total ?? (input ?? 0) + (output ?? 0)
     apiDurationMs += finiteNumber(usage.apiDurationMs) ?? 0
+    tokensCached += finiteNumber(usage.cachedReadTokens) ?? 0
+    tokensReasoning += finiteNumber(usage.reasoningTokens) ?? 0
+    const topLevelCalls = finiteNumber(usage.modelCalls)
+    modelCalls += topLevelCalls ?? 0
+    providerCostTicks += finiteNumber(usage.costUsdTicks) ?? 0
 
     const modelUsage = asRecord(usage.modelUsage)
     if (modelUsage) {
+      let nestedCalls = 0
       for (const [model, modelRaw] of Object.entries(modelUsage)) {
         const modelTotals = asRecord(modelRaw)
         const calls = Math.max(1, finiteNumber(modelTotals?.modelCalls) ?? 1)
+        nestedCalls += calls
         for (let index = 0; index < calls; index++) observedModels.push(model)
       }
+      if (topLevelCalls == null) modelCalls += nestedCalls
     }
     const meta = asRecord(update?._meta)
     const fallbackModel = stringValue(meta?.modelId)
@@ -197,8 +180,15 @@ export function parseGrokUsageUpdates(text: string): GrokUsageTotals {
     tokensIn: foundUsage ? tokensIn : null,
     tokensOut: foundUsage ? tokensOut : null,
     tokensTotal: foundUsage ? tokensTotal : null,
+    tokensCached: foundUsage ? tokensCached : null,
+    tokensReasoning: foundUsage ? tokensReasoning : null,
+    modelCalls: foundUsage ? modelCalls : null,
     model: dominantModel('grok', observedModels),
-    apiDurationMs: foundUsage && apiDurationMs > 0 ? apiDurationMs : null
+    apiDurationMs: foundUsage && apiDurationMs > 0 ? apiDurationMs : null,
+    providerCostUsd:
+      foundUsage && providerCostTicks > 0
+        ? +(providerCostTicks / 1_000_000_000).toFixed(6)
+        : null
   }
 }
 
@@ -223,8 +213,12 @@ function emptyUsage(): GrokUsageTotals {
     tokensIn: null,
     tokensOut: null,
     tokensTotal: null,
+    tokensCached: null,
+    tokensReasoning: null,
+    modelCalls: null,
     model: null,
-    apiDurationMs: null
+    apiDurationMs: null,
+    providerCostUsd: null
   }
 }
 

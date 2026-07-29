@@ -4,6 +4,7 @@ import type {
   AlertRow,
   AppSettings,
   BurnPoint,
+  CollectorHealth,
   DailyUsagePoint,
   ModelMixItem,
   OverviewMetrics,
@@ -25,12 +26,50 @@ function providerClause(provider: ProviderFilter, column = 'provider'): string {
   return provider === 'all' ? '1=1' : `${column} = @provider`
 }
 
-function rangeStart(rangeDays: RangeDays): Date | null {
+function rangeStart(rangeDays: RangeDays, timezone = 'system'): Date | null {
   if (rangeDays === 0) return null
-  const since = new Date()
-  since.setUTCHours(0, 0, 0, 0)
-  since.setUTCDate(since.getUTCDate() - (rangeDays - 1))
-  return since
+  const zone = timezone === 'system'
+    ? Intl.DateTimeFormat().resolvedOptions().timeZone
+    : timezone
+  const nowParts = dateParts(new Date(), zone)
+  const targetWallClock = new Date(
+    Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day - (rangeDays - 1))
+  )
+  let candidate = new Date(targetWallClock.getTime() - zoneOffset(targetWallClock, zone))
+  candidate = new Date(targetWallClock.getTime() - zoneOffset(candidate, zone))
+  return candidate
+}
+
+function dateParts(date: Date, timeZone: string): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date)
+  const value = (type: string) => Number(parts.find((p) => p.type === type)?.value)
+  return { year: value('year'), month: value('month'), day: value('day') }
+}
+
+function zoneOffset(date: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+  }).formatToParts(date)
+  const value = (type: string) => Number(parts.find((p) => p.type === type)?.value)
+  return Date.UTC(
+    value('year'), value('month') - 1, value('day'), value('hour'),
+    value('minute'), value('second')
+  ) - date.getTime()
+}
+
+function dayInZone(iso: string, timezone: string): string {
+  const zone = timezone === 'system'
+    ? Intl.DateTimeFormat().resolvedOptions().timeZone
+    : timezone
+  const { year, month, day } = dateParts(new Date(iso), zone)
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 function inclusiveDaysSince(day: string | null): number {
@@ -81,10 +120,15 @@ export function getLatestQuotas(db: Database.Database): QuotaSnapshot[] {
   const byProvider = new Map<string, QuotaSnapshot>()
   for (const r of rows) {
     let products: Record<string, number> | undefined
+    let windows: QuotaSnapshot['windows']
     if (typeof r.raw_summary_json === 'string' && r.raw_summary_json) {
       try {
-        const parsed = JSON.parse(r.raw_summary_json) as { products?: Record<string, number> }
+        const parsed = JSON.parse(r.raw_summary_json) as {
+          products?: Record<string, number>
+          windows?: QuotaSnapshot['windows']
+        }
         products = parsed.products ?? undefined
+        windows = parsed.windows ?? undefined
       } catch {
         products = undefined
       }
@@ -103,6 +147,7 @@ export function getLatestQuotas(db: Database.Database): QuotaSnapshot[] {
       auth_connected: Boolean(r.auth_connected),
       stale: Boolean(r.stale),
       live_captured_at: (r.live_captured_at as string | null) ?? null,
+      windows,
       products
     })
   }
@@ -134,7 +179,8 @@ export function getOverview(
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): OverviewMetrics {
-  const sinceDay = rangeStart(rangeDays)?.toISOString().slice(0, 10) ?? null
+  const timezone = getSettings(db).timezone
+  const sinceIso = rangeStart(rangeDays, timezone)?.toISOString() ?? null
 
   const row = db
     .prepare(
@@ -142,17 +188,18 @@ export function getOverview(
     SELECT
       COALESCE(SUM(tokens_total), 0) AS tokens_total,
       COALESCE(SUM(api_equiv_usd), 0) AS api_equiv_usd,
-      COALESCE(SUM(session_count), 0) AS session_count,
-      MIN(day) AS min_day
-    FROM usage_daily
-    WHERE (@sinceDay IS NULL OR day >= @sinceDay) AND ${providerClause(provider)}
+      COUNT(*) AS session_count,
+      MIN(COALESCE(started_at, created_at)) AS min_started_at
+    FROM sessions
+    WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+      AND ${providerClause(provider)}
   `
     )
-    .get({ sinceDay, provider }) as {
+    .get({ sinceIso, provider }) as {
     tokens_total: number
     api_equiv_usd: number
     session_count: number
-    min_day: string | null
+    min_started_at: string | null
   }
 
   const byProviderRows = db
@@ -162,14 +209,15 @@ export function getOverview(
       provider,
       COALESCE(SUM(tokens_total), 0) AS tokens_total,
       COALESCE(SUM(api_equiv_usd), 0) AS api_equiv_usd,
-      COALESCE(SUM(session_count), 0) AS session_count
-    FROM usage_daily
-    WHERE (@sinceDay IS NULL OR day >= @sinceDay) AND ${providerClause(provider)}
+      COUNT(*) AS session_count
+    FROM sessions
+    WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+      AND ${providerClause(provider)}
     GROUP BY provider
     ORDER BY tokens_total DESC
   `
     )
-    .all({ sinceDay, provider }) as ProviderCost[]
+    .all({ sinceIso, provider }) as ProviderCost[]
 
   const quotas = getLatestQuotas(db).filter(
     (q) => provider === 'all' || q.provider === provider
@@ -182,7 +230,23 @@ export function getOverview(
       ? usedValues.reduce((a, b) => a + b, 0) / usedValues.length
       : null
 
-  const averageDays = rangeDays === 0 ? inclusiveDaysSince(row.min_day) : rangeDays
+  const breakdown = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(tokens_in), 0) AS input,
+         COALESCE(SUM(tokens_out), 0) AS output,
+         COALESCE(SUM(tokens_cached), 0) AS cached,
+         COALESCE(SUM(tokens_reasoning), 0) AS reasoning,
+         COALESCE(SUM(model_calls), 0) AS model_calls
+       FROM sessions
+       WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+         AND ${providerClause(provider)}`
+    )
+    .get({ sinceIso, provider }) as OverviewMetrics['token_breakdown']
+
+  const averageDays = rangeDays === 0
+    ? inclusiveDaysSince(row.min_started_at?.slice(0, 10) ?? null)
+    : rangeDays
   return {
     tokens_total: row.tokens_total,
     api_equiv_usd: row.api_equiv_usd,
@@ -190,6 +254,7 @@ export function getOverview(
     avg_used_pct,
     range_days: rangeDays,
     avg_daily_tokens: row.tokens_total / averageDays,
+    token_breakdown: breakdown,
     by_provider: byProviderRows,
     rate_card_version: RATE_CARD_VERSION
   }
@@ -200,33 +265,65 @@ export function getDailyUsage(
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): DailyUsagePoint[] {
-  const sinceDay = rangeStart(rangeDays)?.toISOString().slice(0, 10) ?? null
-
-  const rows = db
+  const timezone = getSettings(db).timezone
+  const sinceIso = rangeStart(rangeDays, timezone)?.toISOString() ?? null
+  const sessions = db
     .prepare(
       `
-    SELECT day, provider, tokens_total, session_count, api_equiv_usd
-    FROM usage_daily
-    WHERE (@sinceDay IS NULL OR day >= @sinceDay) AND ${providerClause(provider)}
-    ORDER BY day ASC
+    SELECT provider, COALESCE(started_at, created_at) AS occurred_at,
+           COALESCE(tokens_total, 0) AS tokens_total,
+           COALESCE(api_equiv_usd, 0) AS api_equiv_usd
+    FROM sessions
+    WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+      AND ${providerClause(provider)}
   `
     )
-    .all({ sinceDay, provider }) as DailyUsagePoint[]
-
-  return rows
+    .all({ sinceIso, provider }) as Array<{
+      provider: ProviderId
+      occurred_at: string
+      tokens_total: number
+      api_equiv_usd: number
+    }>
+  const grouped = new Map<string, DailyUsagePoint>()
+  for (const session of sessions) {
+    const day = dayInZone(session.occurred_at, timezone)
+    const key = `${day}\u0000${session.provider}`
+    const current = grouped.get(key) ?? {
+      day,
+      provider: session.provider,
+      tokens_total: 0,
+      session_count: 0,
+      api_equiv_usd: 0
+    }
+    current.tokens_total += session.tokens_total
+    current.session_count += 1
+    current.api_equiv_usd += session.api_equiv_usd
+    grouped.set(key, current)
+  }
+  return Array.from(grouped.values()).sort((a, b) => a.day.localeCompare(b.day))
 }
 
 export function getSessions(
   db: Database.Database,
   provider: ProviderFilter,
   rangeDays: RangeDays,
-  search?: string
+  search?: string,
+  options: {
+    model?: string
+    day?: string
+    sortBy?: 'started_at' | 'tokens_total' | 'api_equiv_usd' | 'duration_ms'
+    sortDir?: 'asc' | 'desc'
+    limit?: number
+    offset?: number
+  } = {}
 ): SessionRow[] {
-  const sinceIso = rangeStart(rangeDays)?.toISOString() ?? null
+  const sinceIso = rangeStart(rangeDays, getSettings(db).timezone)?.toISOString() ?? null
 
   let sql = `
     SELECT id, provider, project, model, tokens_in, tokens_out, tokens_total,
-           api_equiv_usd, duration_ms, status, started_at, ended_at, source
+           tokens_cached, tokens_reasoning, model_calls, api_equiv_usd,
+           provider_cost_usd, api_duration_ms, duration_ms, status,
+           started_at, ended_at, source
     FROM sessions
     WHERE (@sinceIso IS NULL OR (started_at IS NOT NULL AND started_at >= @sinceIso))
       AND ${providerClause(provider)}
@@ -238,7 +335,26 @@ export function getSessions(
     params.q = `%${search.trim()}%`
   }
 
-  sql += ` ORDER BY started_at DESC LIMIT 200`
+  if (options.model?.trim()) {
+    sql += ` AND lower(model) = lower(@model)`
+    params.model = options.model.trim()
+  }
+  if (options.day) {
+    sql += ` AND substr(started_at, 1, 10) = @day`
+    params.day = options.day
+  }
+
+  const sortColumns = {
+    started_at: 'started_at',
+    tokens_total: 'tokens_total',
+    api_equiv_usd: 'api_equiv_usd',
+    duration_ms: 'duration_ms'
+  } as const
+  const sortBy = sortColumns[options.sortBy ?? 'started_at']
+  const sortDir = options.sortDir === 'asc' ? 'ASC' : 'DESC'
+  params.limit = Math.min(Math.max(options.limit ?? 100, 1), 500)
+  params.offset = Math.max(options.offset ?? 0, 0)
+  sql += ` ORDER BY ${sortBy} ${sortDir}, id ASC LIMIT @limit OFFSET @offset`
 
   const rows = db.prepare(sql).all(params) as SessionRow[]
   return rows.map((row) => ({
@@ -247,12 +363,56 @@ export function getSessions(
   }))
 }
 
+export function getCollectorHealth(db: Database.Database): CollectorHealth[] {
+  const rows = db.prepare('SELECT * FROM collector_health').all() as Array<
+    Omit<CollectorHealth, 'source_label'>
+  >
+  const byProvider = new Map(rows.map((row) => [row.provider, row]))
+  return PROVIDER_IDS.map((provider) => ({
+    provider,
+    source_label: `~/.${provider === 'grok' ? 'grok' : provider}`,
+    watcher_status: 'missing',
+    last_scan_at: null,
+    last_success_at: null,
+    last_error: null,
+    sessions_seen: 0,
+    last_duration_ms: null,
+    ...byProvider.get(provider)
+  }))
+}
+
+export function recordCollectorHealth(
+  db: Database.Database,
+  provider: ProviderId,
+  update: Partial<Omit<CollectorHealth, 'provider' | 'source_label'>>
+): void {
+  const current = getCollectorHealth(db).find((row) => row.provider === provider)
+  if (!current) return
+  const next = { ...current, ...update, provider }
+  db.prepare(
+    `INSERT INTO collector_health (
+       provider, watcher_status, last_scan_at, last_success_at, last_error,
+       sessions_seen, last_duration_ms
+     ) VALUES (
+       @provider, @watcher_status, @last_scan_at, @last_success_at, @last_error,
+       @sessions_seen, @last_duration_ms
+     )
+     ON CONFLICT(provider) DO UPDATE SET
+       watcher_status = excluded.watcher_status,
+       last_scan_at = excluded.last_scan_at,
+       last_success_at = excluded.last_success_at,
+       last_error = excluded.last_error,
+       sessions_seen = excluded.sessions_seen,
+       last_duration_ms = excluded.last_duration_ms`
+  ).run(next)
+}
+
 export function getModelMix(
   db: Database.Database,
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): ModelMixItem[] {
-  const sinceIso = rangeStart(rangeDays)?.toISOString() ?? null
+  const sinceIso = rangeStart(rangeDays, getSettings(db).timezone)?.toISOString() ?? null
 
   const rows = db
     .prepare(
@@ -305,7 +465,7 @@ export function getBurn(
   const quotas = getLatestQuotas(db)
   const latest = quotas.find((x) => x.provider === provider)
 
-  const sinceIso = rangeStart(rangeDays)?.toISOString() ?? null
+  const sinceIso = rangeStart(rangeDays, getSettings(db).timezone)?.toISOString() ?? null
 
   const rows = db
     .prepare(
@@ -424,8 +584,15 @@ export function exportAsCsv(
     'provider',
     'project',
     'model',
+    'tokens_in',
+    'tokens_out',
     'tokens_total',
+    'tokens_cached',
+    'tokens_reasoning',
+    'model_calls',
     'api_equiv_usd',
+    'provider_cost_usd',
+    'api_duration_ms',
     'duration_ms',
     'status',
     'started_at'
@@ -439,8 +606,15 @@ export function exportAsCsv(
         s.provider,
         s.project,
         s.model,
+        s.tokens_in,
+        s.tokens_out,
         s.tokens_total,
+        s.tokens_cached,
+        s.tokens_reasoning,
+        s.model_calls,
         s.api_equiv_usd,
+        s.provider_cost_usd,
+        s.api_duration_ms,
         s.duration_ms,
         s.status,
         s.started_at

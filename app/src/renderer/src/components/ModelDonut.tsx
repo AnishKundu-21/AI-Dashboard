@@ -4,7 +4,15 @@ import { formatTokens } from '../lib/format'
 
 const FALLBACK_COLORS = ['#a78bfa', '#fbbf24', '#525866', '#34d399', '#fb7185']
 
-export function ModelDonut({ models }: { models: ModelMixItem[] }) {
+export function ModelDonut({
+  models,
+  selectedModel,
+  onSelectModel
+}: {
+  models: ModelMixItem[]
+  selectedModel?: string
+  onSelectModel?: (model: string) => void
+}) {
   const total = models.reduce((s, m) => s + m.tokens_total, 0)
   const slices = models.slice(0, 8)
 
@@ -40,7 +48,12 @@ export function ModelDonut({ models }: { models: ModelMixItem[] }) {
           <div style={{ color: 'var(--muted)', fontSize: 12 }}>No model data yet</div>
         ) : (
           slices.map((m) => (
-            <div key={`${m.provider}-${m.model}`} className="model-row">
+            <button
+              type="button"
+              key={`${m.provider}-${m.model}`}
+              className={`model-row${selectedModel === m.model ? ' selected' : ''}`}
+              onClick={() => onSelectModel?.(m.model)}
+            >
               <i style={{ background: PROVIDER_META[m.provider].color }} />
               <span>
                 <strong>{m.model}</strong> · {PROVIDER_META[m.provider].short}
@@ -48,7 +61,7 @@ export function ModelDonut({ models }: { models: ModelMixItem[] }) {
               <span>
                 {(m.share * 100).toFixed(0)}% · {formatTokens(m.tokens_total)}
               </span>
-            </div>
+            </button>
           ))
         )}
       </div>

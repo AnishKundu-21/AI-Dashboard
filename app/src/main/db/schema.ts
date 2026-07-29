@@ -121,5 +121,49 @@ FROM sessions
 WHERE COALESCE(started_at, created_at) IS NOT NULL
 GROUP BY substr(COALESCE(started_at, created_at), 1, 10), provider;
 `
+  },
+  {
+    version: 3,
+    sql: `
+ALTER TABLE sessions ADD COLUMN tokens_cached REAL;
+ALTER TABLE sessions ADD COLUMN tokens_reasoning REAL;
+ALTER TABLE sessions ADD COLUMN model_calls INTEGER;
+ALTER TABLE sessions ADD COLUMN provider_cost_usd REAL;
+ALTER TABLE sessions ADD COLUMN api_duration_ms INTEGER;
+`
+  },
+  {
+    version: 4,
+    sql: `
+CREATE TABLE IF NOT EXISTS collector_health (
+  provider TEXT PRIMARY KEY,
+  watcher_status TEXT NOT NULL DEFAULT 'polling',
+  last_scan_at TEXT,
+  last_success_at TEXT,
+  last_error TEXT,
+  sessions_seen INTEGER NOT NULL DEFAULT 0,
+  last_duration_ms INTEGER
+);
+`
+  },
+  {
+    version: 5,
+    sql: `
+DELETE FROM sessions
+WHERE provider = 'grok' AND tokens_total IS NULL;
+
+UPDATE sessions
+SET model = 'Unknown'
+WHERE provider = 'codex' AND lower(model) = 'codex-auto-review';
+
+DELETE FROM usage_daily;
+INSERT INTO usage_daily (day, provider, tokens_total, session_count, api_equiv_usd)
+SELECT
+  substr(COALESCE(started_at, created_at), 1, 10), provider,
+  COALESCE(SUM(tokens_total), 0), COUNT(*), COALESCE(SUM(api_equiv_usd), 0)
+FROM sessions
+WHERE COALESCE(started_at, created_at) IS NOT NULL
+GROUP BY substr(COALESCE(started_at, created_at), 1, 10), provider;
+`
   }
 ]

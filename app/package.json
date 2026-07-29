@@ -10,7 +10,8 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "dist": "npm run build && electron-builder --win",
+    "dist": "npm run build && electron-builder --win --config.win.signAndEditExecutable=false",
+    "dist:signed": "npm run build && electron-builder --win",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -19,6 +20,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
+    "electron-updater": "^6.8.9",
     "zod": "^3.24.2"
   },
   "devDependencies": {
@@ -44,10 +46,11 @@
     },
     "files": [
       "out/**/*",
+      "resources/icon.png",
       "package.json"
     ],
     "win": {
-      "signAndEditExecutable": false,
+      "icon": "resources/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -59,7 +62,9 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "resources/icon.ico",
+      "uninstallerIcon": "resources/icon.ico"
     }
   }
 }

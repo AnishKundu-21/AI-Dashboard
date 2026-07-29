@@ -24,13 +24,14 @@ npm run build      # compile main/preload/renderer
 npm run typecheck
 npm test
 npm run dist       # Windows NSIS installer (after build)
+npm run dist:signed # production artifact; requires signing environment/certificate
 ```
 
 **Note:** `better-sqlite3` is rebuilt for the **Electron** ABI (`rebuild:native`), not for system Node. That is expected.
 
 ## Current phase
 
-**Phase 3:** analytics parity (prototype features minus multi-machine sync).
+**Phase 4:** real-data hardening, diagnostics, security, and Windows packaging.
 
 - Live collectors (Grok / Codex / Claude discovery) from Phase 2
 - Overview with cost-by-provider + avg daily tokens
@@ -41,6 +42,16 @@ npm run dist       # Windows NSIS installer (after build)
 - Pricing rate card `2026-07-v1`
 - Empty databases stay empty: production never inserts sample sessions or fake live quota
 - Real-time CLI filesystem watchers push local changes in under a second; remote quota falls back to 15-second focused polling
+- Provider-neutral token detail for Grok, Codex, and Claude: input, output, cached, reasoning (when emitted), model calls, provider-reported cost, and API duration
+- Today / 3 / 5 / 7 / 30 / 180 / 365 day and lifetime views, with timezone-aware day boundaries
+- Clickable chart/model drill-down, session sorting, bounded pagination, and collector health/rescan controls
+- Sandboxed preload, trusted-sender IPC checks, branded Windows icon, NSIS installer, and optional HTTPS auto-update feed
+
+## Release configuration
+
+- Set `AI_USAGE_UPDATE_URL` to an HTTPS generic electron-builder update feed to enable update checks in packaged builds.
+- Set electron-builder's `CSC_LINK` and `CSC_KEY_PASSWORD` variables and run `npm run dist:signed` to sign production artifacts. `npm run dist` remains the unsigned local-build path.
+- Claude session tokens are read from local Claude Code JSONL. A remaining-quota percentage is shown only if a supported authenticated source returns it.
 
 ## Data directory
 
@@ -55,5 +66,7 @@ npm run dist       # Windows NSIS installer (after build)
 
 - Tokens never reach the renderer
 - IPC validated with zod
+- IPC accepts calls only from the packaged renderer (or the configured Vite dev origin)
+- Electron renderer sandbox enabled
 - No prompt/response storage
 - Project names are basenames only

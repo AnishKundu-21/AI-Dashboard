@@ -61,6 +61,14 @@ export function mapGrokBilling(
     stale: false,
     live_captured_at:
       used != null ? (opts.capturedAt ?? new Date().toISOString()) : null,
+    windows: [
+      {
+        label: periodTypeLabel(periodType) ?? 'Weekly',
+        used_pct: used,
+        remaining_pct: used != null ? clampPct(100 - used) : null,
+        reset_at: resetAt
+      }
+    ],
     products: Object.keys(products).length > 0 ? products : undefined
   }
 }

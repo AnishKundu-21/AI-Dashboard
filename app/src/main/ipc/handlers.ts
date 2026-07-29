@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { writeFileSync } from 'fs'
 import {
   AlertsDismissInput,
@@ -7,6 +7,7 @@ import {
   GetOverviewInput,
   GetSessionsInput,
   IPC,
+  RescanProviderInput,
   SettingsSetInput
 } from '../../shared/ipc'
 import { getDb } from '../db'
@@ -15,6 +16,7 @@ import {
   exportAsCsv,
   exportAsJson,
   getBurn,
+  getCollectorHealth,
   getDailyUsage,
   getLatestQuotas,
   getModelMix,
@@ -25,44 +27,58 @@ import {
   listAlerts,
   setSettings
 } from '../db/queries'
-import { refreshEverything } from '../collectors/service'
+import { collectProviderSessions, refreshEverything } from '../collectors/service'
 import { applyRetention } from '../db/retention'
 
 export function registerIpcHandlers(): void {
-  ipcMain.handle(IPC.getOverview, (_e, raw) => {
+  secureHandle(IPC.getOverview, (_e, raw) => {
     const input = GetOverviewInput.parse(raw ?? {})
     return getOverview(getDb(), input.provider, input.range_days)
   })
 
-  ipcMain.handle(IPC.getQuotas, () => getLatestQuotas(getDb()))
+  secureHandle(IPC.getQuotas, () => getLatestQuotas(getDb()))
 
-  ipcMain.handle(IPC.getDailyUsage, (_e, raw) => {
+  secureHandle(IPC.getDailyUsage, (_e, raw) => {
     const input = GetOverviewInput.parse(raw ?? {})
     return getDailyUsage(getDb(), input.provider, input.range_days)
   })
 
-  ipcMain.handle(IPC.getBurn, (_e, raw) => {
+  secureHandle(IPC.getBurn, (_e, raw) => {
     const input = GetBurnInput.parse(raw)
     return getBurn(getDb(), input.provider, input.range_days)
   })
 
-  ipcMain.handle(IPC.getModelMix, (_e, raw) => {
+  secureHandle(IPC.getModelMix, (_e, raw) => {
     const input = GetOverviewInput.parse(raw ?? {})
     return getModelMix(getDb(), input.provider, input.range_days)
   })
 
-  ipcMain.handle(IPC.getSessions, (_e, raw) => {
+  secureHandle(IPC.getSessions, (_e, raw) => {
     const input = GetSessionsInput.parse(raw ?? {})
-    return getSessions(getDb(), input.provider, input.range_days, input.search)
+    return getSessions(getDb(), input.provider, input.range_days, input.search, {
+      model: input.model,
+      day: input.day,
+      sortBy: input.sort_by,
+      sortDir: input.sort_dir,
+      limit: input.limit,
+      offset: input.offset
+    })
   })
 
-  ipcMain.handle(IPC.getProjections, () => getProjections(getDb()))
+  secureHandle(IPC.getCollectorHealth, () => getCollectorHealth(getDb()))
 
-  ipcMain.handle(IPC.refreshQuotas, async () => {
+  secureHandle(IPC.rescanProvider, (_e, raw) => {
+    const input = RescanProviderInput.parse(raw)
+    return collectProviderSessions(input.provider)
+  })
+
+  secureHandle(IPC.getProjections, () => getProjections(getDb()))
+
+  secureHandle(IPC.refreshQuotas, async () => {
     return refreshEverything()
   })
 
-  ipcMain.handle(IPC.exportData, async (e, raw) => {
+  secureHandle(IPC.exportData, async (e, raw) => {
     const input = ExportInput.parse(raw)
     const content =
       input.format === 'csv'
@@ -93,9 +109,9 @@ export function registerIpcHandlers(): void {
     return { ok: true as const, content, path: result.filePath }
   })
 
-  ipcMain.handle(IPC.settingsGet, () => getSettings(getDb()))
+  secureHandle(IPC.settingsGet, () => getSettings(getDb()))
 
-  ipcMain.handle(IPC.settingsSet, (_e, raw) => {
+  secureHandle(IPC.settingsSet, (_e, raw) => {
     const input = SettingsSetInput.parse(raw ?? {})
     const next = setSettings(getDb(), input)
     applyRetention(getDb(), next.retention_days)
@@ -103,12 +119,35 @@ export function registerIpcHandlers(): void {
     return next
   })
 
-  ipcMain.handle(IPC.alertsList, () => listAlerts(getDb()))
+  secureHandle(IPC.alertsList, () => listAlerts(getDb()))
 
-  ipcMain.handle(IPC.alertsDismiss, (_e, raw) => {
+  secureHandle(IPC.alertsDismiss, (_e, raw) => {
     const input = AlertsDismissInput.parse(raw)
     dismissAlert(getDb(), input.id)
     broadcastChanged()
+  })
+}
+
+function secureHandle(
+  channel: string,
+  listener: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
+): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    const url = event.senderFrame?.url ?? event.sender.getURL()
+    const devUrl = process.env.ELECTRON_RENDERER_URL
+    let trusted = false
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol === 'file:') {
+        trusted = parsed.pathname.replace(/\\/g, '/').endsWith('/out/renderer/index.html')
+      } else if (devUrl) {
+        trusted = parsed.origin === new URL(devUrl).origin
+      }
+    } catch {
+      trusted = false
+    }
+    if (!trusted) throw new Error('Rejected IPC request from an untrusted renderer')
+    return listener(event, ...args)
   })
 }
 

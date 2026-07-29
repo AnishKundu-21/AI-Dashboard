@@ -881,6 +881,14 @@ Delivery:
 
 **Exit:** shareable Windows install.
 
+Implementation update (2026-07-29): the app now includes provider-neutral detailed
+token accounting for Grok/Codex/Claude, local filesystem push updates, provider-only
+rescans, collector health, timezone-aware ranges, chart/model drill-down, bounded
+session pagination/sorting, a sandboxed preload, trusted IPC senders, branded Windows
+assets, and an optional generic HTTPS update feed. Claude remaining subscription quota
+continues to use the honest estimate/unknown state unless Anthropic exposes a supported
+authenticated quota source.
+
 ### Phase 5 — Future
 
 - Multi-machine JSONL

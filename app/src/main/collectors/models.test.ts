@@ -7,6 +7,10 @@ describe('normalizeModelName', () => {
     expect(normalizeModelName('codex', 'o3')).toBe('o3')
   })
 
+  it('rejects Codex workflow labels that are not model IDs', () => {
+    expect(normalizeModelName('codex', 'codex-auto-review')).toBeNull()
+  })
+
   it('rejects settings and arbitrary metadata values', () => {
     expect(normalizeModelName('codex', 'auto')).toBeNull()
     expect(normalizeModelName('codex', 'high')).toBeNull()

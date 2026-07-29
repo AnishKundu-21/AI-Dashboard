@@ -7,6 +7,7 @@ import {
   GetOverviewInput,
   GetSessionsInput,
   IPC,
+  RescanProviderInput,
   SettingsSetInput
 } from '../shared/ipc'
 
@@ -21,6 +22,9 @@ const api: DashboardApi = {
     ipcRenderer.invoke(IPC.getModelMix, GetOverviewInput.parse(input ?? {})),
   getSessions: (input) =>
     ipcRenderer.invoke(IPC.getSessions, GetSessionsInput.parse(input ?? {})),
+  getCollectorHealth: () => ipcRenderer.invoke(IPC.getCollectorHealth),
+  rescanProvider: (input) =>
+    ipcRenderer.invoke(IPC.rescanProvider, RescanProviderInput.parse(input)),
   getProjections: () => ipcRenderer.invoke(IPC.getProjections),
   refreshQuotas: () => ipcRenderer.invoke(IPC.refreshQuotas),
   exportData: (input) =>

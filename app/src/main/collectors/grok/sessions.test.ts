@@ -47,8 +47,12 @@ describe('parseGrokUsageUpdates', () => {
       tokensIn: 140,
       tokensOut: 30,
       tokensTotal: 170,
+      tokensCached: 0,
+      tokensReasoning: 0,
+      modelCalls: 3,
       model: 'grok-4.5-build',
-      apiDurationMs: 350
+      apiDurationMs: 350,
+      providerCostUsd: null
     })
     expect(JSON.stringify(result)).not.toContain('private')
   })
@@ -58,8 +62,12 @@ describe('parseGrokUsageUpdates', () => {
       tokensIn: null,
       tokensOut: null,
       tokensTotal: null,
+      tokensCached: null,
+      tokensReasoning: null,
+      modelCalls: null,
       model: null,
-      apiDurationMs: null
+      apiDurationMs: null,
+      providerCostUsd: null
     })
   })
 

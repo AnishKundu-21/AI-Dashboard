@@ -14,7 +14,9 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    // Bundle validation dependencies so Electron's sandboxed preload has no
+    // Node module-resolution requirement beyond the built-in electron API.
+    plugins: [],
     build: {
       rollupOptions: {
         input: {

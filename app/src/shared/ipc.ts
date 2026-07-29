@@ -3,6 +3,7 @@ import {
   AlertRowSchema,
   AppSettingsSchema,
   BurnPointSchema,
+  CollectorHealthSchema,
   DailyUsagePointSchema,
   DashboardFilterSchema,
   ExportFormatSchema,
@@ -23,6 +24,8 @@ export const IPC = {
   getBurn: 'dashboard:getBurn',
   getModelMix: 'dashboard:getModelMix',
   getSessions: 'dashboard:getSessions',
+  getCollectorHealth: 'dashboard:getCollectorHealth',
+  rescanProvider: 'dashboard:rescanProvider',
   getProjections: 'dashboard:getProjections',
   refreshQuotas: 'dashboard:refreshQuotas',
   exportData: 'dashboard:export',
@@ -60,6 +63,9 @@ export type SettingsSetInput = z.infer<typeof SettingsSetInput>
 export const AlertsDismissInput = z.object({ id: z.string() })
 export type AlertsDismissInput = z.infer<typeof AlertsDismissInput>
 
+export const RescanProviderInput = z.object({ provider: ProviderIdSchema })
+export type RescanProviderInput = z.infer<typeof RescanProviderInput>
+
 /** API surface exposed on window.api (preload) */
 export interface DashboardApi {
   getOverview: (input?: GetOverviewInput) => Promise<z.infer<typeof OverviewMetricsSchema>>
@@ -68,6 +74,8 @@ export interface DashboardApi {
   getBurn: (input: GetBurnInput) => Promise<z.infer<typeof BurnPointSchema>[]>
   getModelMix: (input?: GetOverviewInput) => Promise<z.infer<typeof ModelMixItemSchema>[]>
   getSessions: (input?: GetSessionsInput) => Promise<z.infer<typeof SessionRowSchema>[]>
+  getCollectorHealth: () => Promise<z.infer<typeof CollectorHealthSchema>[]>
+  rescanProvider: (input: RescanProviderInput) => Promise<{ upserted: number }>
   getProjections: () => Promise<z.infer<typeof ProjectionCardSchema>[]>
   refreshQuotas: () => Promise<z.infer<typeof QuotaSnapshotSchema>[]>
   exportData: (

@@ -5,6 +5,7 @@ import { disconnectedSnapshot, estimateSnapshot } from '../base'
 import { getClaudeHome } from '../../util/paths'
 import type { QuotaSnapshot } from '../../../shared/types'
 import { resolvePlan } from '../plan'
+import { collectClaudeSessions } from './sessions'
 
 /**
  * Claude Code adapter — best-effort.
@@ -41,8 +42,8 @@ export const claudeAdapter: ProviderAdapter = {
   },
 
   async collectSessions(_ctx: AdapterContext): Promise<CollectResult> {
-    // Session store layout TBD after first logged-in machine
-    return { sessions: [], upserted: 0 }
+    const sessions = collectClaudeSessions(getClaudeHome())
+    return { sessions, upserted: sessions.length }
   }
 }
 

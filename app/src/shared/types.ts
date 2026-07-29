@@ -43,6 +43,7 @@ export type PlanConfig = z.infer<typeof PlanConfigSchema>
 export const AppSettingsSchema = z.object({
   display_currency: z.string().default('USD'),
   locale: z.string().default('en-US'),
+  timezone: z.string().default('system'),
   notify_enabled: z.boolean().default(true),
   network_quota_refresh: z.boolean().default(true),
   retention_days: z.number().int().positive().default(90),
@@ -70,6 +71,16 @@ export const QuotaSnapshotSchema = z.object({
   auth_connected: z.boolean(),
   stale: z.boolean().optional(),
   live_captured_at: z.string().nullable().optional(),
+  windows: z
+    .array(
+      z.object({
+        label: z.string(),
+        used_pct: z.number().min(0).max(100).nullable(),
+        remaining_pct: z.number().min(0).max(100).nullable(),
+        reset_at: z.string().nullable()
+      })
+    )
+    .optional(),
   products: z.record(z.string(), z.number()).optional(),
   remaining_text: z.string().optional()
 })
@@ -83,7 +94,12 @@ export const SessionRowSchema = z.object({
   tokens_in: z.number().nullable(),
   tokens_out: z.number().nullable(),
   tokens_total: z.number().nullable(),
+  tokens_cached: z.number().nullable().optional(),
+  tokens_reasoning: z.number().nullable().optional(),
+  model_calls: z.number().nullable().optional(),
   api_equiv_usd: z.number().nullable(),
+  provider_cost_usd: z.number().nullable().optional(),
+  api_duration_ms: z.number().nullable().optional(),
   duration_ms: z.number().nullable(),
   status: SessionStatusSchema,
   started_at: z.string().nullable(),
@@ -91,6 +107,18 @@ export const SessionRowSchema = z.object({
   source: z.string()
 })
 export type SessionRow = z.infer<typeof SessionRowSchema>
+
+export const CollectorHealthSchema = z.object({
+  provider: ProviderIdSchema,
+  source_label: z.string(),
+  watcher_status: z.enum(['watching', 'polling', 'missing', 'error']),
+  last_scan_at: z.string().nullable(),
+  last_success_at: z.string().nullable(),
+  last_error: z.string().nullable(),
+  sessions_seen: z.number().int().nonnegative(),
+  last_duration_ms: z.number().int().nonnegative().nullable()
+})
+export type CollectorHealth = z.infer<typeof CollectorHealthSchema>
 
 export const ProviderCostSchema = z.object({
   provider: ProviderIdSchema,
@@ -107,6 +135,13 @@ export const OverviewMetricsSchema = z.object({
   avg_used_pct: z.number().nullable(),
   range_days: RangeDaysSchema,
   avg_daily_tokens: z.number(),
+  token_breakdown: z.object({
+    input: z.number(),
+    output: z.number(),
+    cached: z.number(),
+    reasoning: z.number(),
+    model_calls: z.number()
+  }),
   by_provider: z.array(ProviderCostSchema),
   rate_card_version: z.string()
 })
@@ -144,7 +179,15 @@ export type AlertRow = z.infer<typeof AlertRowSchema>
 export const DashboardFilterSchema = z.object({
   provider: z.union([ProviderIdSchema, z.literal('all')]).default('all'),
   range_days: RangeDaysSchema.default(7),
-  search: z.string().optional()
+  search: z.string().optional(),
+  model: z.string().optional(),
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  sort_by: z
+    .enum(['started_at', 'tokens_total', 'api_equiv_usd', 'duration_ms'])
+    .default('started_at'),
+  sort_dir: z.enum(['asc', 'desc']).default('desc'),
+  limit: z.number().int().min(1).max(500).default(100),
+  offset: z.number().int().min(0).default(0)
 })
 export type DashboardFilter = z.infer<typeof DashboardFilterSchema>
 

@@ -7,7 +7,15 @@ const COLORS: Record<ProviderId, string> = {
   codex: PROVIDER_META.codex.color
 }
 
-export function DailyChart({ data }: { data: DailyUsagePoint[] }) {
+export function DailyChart({
+  data,
+  selectedDay,
+  onSelectDay
+}: {
+  data: DailyUsagePoint[]
+  selectedDay?: string
+  onSelectDay?: (day: string) => void
+}) {
   const days = Array.from(new Set(data.map((d) => d.day))).sort()
   const providers = Array.from(new Set(data.map((d) => d.provider))) as ProviderId[]
 
@@ -81,8 +89,10 @@ export function DailyChart({ data }: { data: DailyUsagePoint[] }) {
                 width={Math.max(0.5, barW - 0.25)}
                 height={Math.max(h, 0)}
                 fill={COLORS[p]}
-                opacity={0.85}
+                opacity={selectedDay && selectedDay !== day ? 0.3 : 0.85}
                 rx={days.length <= 60 ? 2 : 0}
+                style={{ cursor: onSelectDay ? 'pointer' : 'default' }}
+                onClick={() => onSelectDay?.(day)}
               />
             )
           })

@@ -4,6 +4,7 @@ import { getDb } from '../db'
 import {
   getLatestQuotas,
   getSettings,
+  recordCollectorHealth,
   setSettings
 } from '../db/queries'
 import { insertQuotaSnapshot, upsertSessions } from '../db/upsert'
@@ -11,7 +12,7 @@ import { evaluateAlerts } from '../alerts/engine'
 import { IPC } from '../../shared/ipc'
 import type { QuotaSnapshot } from '../../shared/types'
 import type { AdapterContext } from './base'
-import { listAdapters, registerDefaultAdapters } from './registry'
+import { getAdapter, listAdapters, registerDefaultAdapters } from './registry'
 import { getClaudeHome, getCodexHome, getGrokHome } from '../util/paths'
 import type { ProviderId } from '../../shared/providers'
 
@@ -21,7 +22,8 @@ let lastRefreshAt: string | null = null
 let refreshing = false
 let refreshAgain = false
 let watchers: FSWatcher[] = []
-let sessionChangeTimer: NodeJS.Timeout | null = null
+const watchedProviders = new Set<ProviderId>()
+const sessionChangeTimers = new Map<ProviderId, NodeJS.Timeout>()
 let quotaChangeTimer: NodeJS.Timeout | null = null
 
 export function initCollectors(): void {
@@ -119,16 +121,66 @@ export async function collectAllSessions(): Promise<{ upserted: number }> {
 
   let upserted = 0
   for (const adapter of listAdapters()) {
+    const started = Date.now()
+    const scannedAt = new Date().toISOString()
     try {
       const result = await adapter.collectSessions(ctx)
       upserted += upsertSessions(db, result.sessions)
-    } catch {
-      // soft-fail
+      recordCollectorHealth(db, adapter.id, {
+        last_scan_at: scannedAt,
+        last_success_at: new Date().toISOString(),
+        last_error: null,
+        sessions_seen: result.sessions.length,
+        last_duration_ms: Date.now() - started
+      })
+    } catch (error) {
+      recordCollectorHealth(db, adapter.id, {
+        last_scan_at: scannedAt,
+        last_error: errorMessage(error),
+        last_duration_ms: Date.now() - started
+      })
     }
   }
 
   broadcastChanged()
   return { upserted }
+}
+
+export async function collectProviderSessions(
+  provider: ProviderId
+): Promise<{ upserted: number }> {
+  initCollectors()
+  const adapter = getAdapter(provider)
+  if (!adapter) return { upserted: 0 }
+  const db = getDb()
+  const settings = getSettings(db)
+  const ctx: AdapterContext = {
+    networkQuotaRefresh: settings.network_quota_refresh,
+    settings
+  }
+  const started = Date.now()
+  const scannedAt = new Date().toISOString()
+  try {
+    const result = await adapter.collectSessions(ctx)
+    const upserted = upsertSessions(db, result.sessions)
+    recordCollectorHealth(db, provider, {
+      last_scan_at: scannedAt,
+      last_success_at: new Date().toISOString(),
+      last_error: null,
+      sessions_seen: result.sessions.length,
+      last_duration_ms: Date.now() - started
+    })
+    broadcastChanged()
+    return { upserted }
+  } catch (error) {
+    recordCollectorHealth(db, provider, {
+      last_scan_at: scannedAt,
+      last_error: errorMessage(error),
+      last_duration_ms: Date.now() - started
+    })
+    broadcastChanged()
+    return { upserted: 0 }
+  }
 }
 
 export async function refreshEverything(): Promise<QuotaSnapshot[]> {
@@ -153,6 +205,7 @@ export function startQuotaPolling(): void {
   }
 
   const scheduleNext = (): void => {
+    ensureRealtimeWatchers()
     const focused = BrowserWindow.getAllWindows().some((w) => w.isFocused())
     const ms = focused ? 15_000 : 60_000
     pollTimer = setTimeout(() => {
@@ -172,6 +225,10 @@ export function startQuotaPolling(): void {
  */
 export function startRealtimeWatchers(): void {
   stopRealtimeWatchers()
+  ensureRealtimeWatchers()
+}
+
+function ensureRealtimeWatchers(): void {
   const roots: Array<{ provider: ProviderId; path: string }> = [
     { provider: 'grok', path: getGrokHome() },
     { provider: 'codex', path: getCodexHome() },
@@ -179,7 +236,11 @@ export function startRealtimeWatchers(): void {
   ]
 
   for (const root of roots) {
-    if (!existsSync(root.path)) continue
+    if (watchedProviders.has(root.provider)) continue
+    if (!existsSync(root.path)) {
+      recordCollectorHealth(getDb(), root.provider, { watcher_status: 'missing' })
+      continue
+    }
     try {
       const watcher = watch(
         root.path,
@@ -189,16 +250,19 @@ export function startRealtimeWatchers(): void {
             root.provider,
             filename?.toString() ?? ''
           )
-          if (kind === 'session') queueSessionRefresh()
+          if (kind === 'session') queueSessionRefresh(root.provider)
           else if (kind === 'quota') queueQuotaRefresh(250)
         }
       )
       watcher.on('error', () => {
-        // Polling remains active if Windows drops a directory watcher.
+        watchedProviders.delete(root.provider)
+        recordCollectorHealth(getDb(), root.provider, { watcher_status: 'error' })
       })
       watchers.push(watcher)
+      watchedProviders.add(root.provider)
+      recordCollectorHealth(getDb(), root.provider, { watcher_status: 'watching' })
     } catch {
-      // Missing/unsupported roots are covered by fallback polling.
+      recordCollectorHealth(getDb(), root.provider, { watcher_status: 'polling' })
     }
   }
 }
@@ -206,9 +270,10 @@ export function startRealtimeWatchers(): void {
 export function stopRealtimeWatchers(): void {
   for (const watcher of watchers) watcher.close()
   watchers = []
-  if (sessionChangeTimer) clearTimeout(sessionChangeTimer)
+  watchedProviders.clear()
+  for (const timer of sessionChangeTimers.values()) clearTimeout(timer)
+  sessionChangeTimers.clear()
   if (quotaChangeTimer) clearTimeout(quotaChangeTimer)
-  sessionChangeTimer = null
   quotaChangeTimer = null
 }
 
@@ -253,13 +318,15 @@ export function classifyProviderChange(
   return 'ignore'
 }
 
-function queueSessionRefresh(): void {
-  if (sessionChangeTimer) clearTimeout(sessionChangeTimer)
-  sessionChangeTimer = setTimeout(() => {
-    sessionChangeTimer = null
-    void collectAllSessions()
+function queueSessionRefresh(provider: ProviderId): void {
+  const pending = sessionChangeTimers.get(provider)
+  if (pending) clearTimeout(pending)
+  const timer = setTimeout(() => {
+    sessionChangeTimers.delete(provider)
+    void collectProviderSessions(provider)
     queueQuotaRefresh(750)
   }, 300)
+  sessionChangeTimers.set(provider, timer)
 }
 
 function queueQuotaRefresh(delayMs: number): void {
@@ -302,4 +369,9 @@ function broadcastChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(IPC.onChanged)
   }
+}
+
+function errorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.slice(0, 500)
 }

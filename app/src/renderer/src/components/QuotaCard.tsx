@@ -95,6 +95,21 @@ export function QuotaCard({ quota }: { quota: QuotaSnapshot }) {
         </p>
       ) : null}
 
+      {quota.windows && quota.windows.length > 1 ? (
+        <div className="quota-windows">
+          {quota.windows.map((window, index) => (
+            <div className="mini" key={`${window.label}-${index}`}>
+              <span>{window.label}</span>
+              <strong>
+                {window.remaining_pct != null
+                  ? `${Math.round(window.remaining_pct)}% left`
+                  : '—'}
+              </strong>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       <div className="source-row">
         source: {quota.source}
         {quota.stale && quota.live_captured_at

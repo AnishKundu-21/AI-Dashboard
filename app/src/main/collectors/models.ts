@@ -29,7 +29,7 @@ export function normalizeModelName(
   value = value.replace(/\s+/g, ' ')
 
   if (provider === 'codex') {
-    if (!/^(?:gpt-[a-z0-9][a-z0-9._-]*|o[1-9](?:-[a-z0-9._-]+)?|codex(?:[- ][a-z0-9._-]+)?)$/i.test(value)) {
+    if (!/^(?:gpt-[a-z0-9][a-z0-9._-]*|o[1-9](?:-[a-z0-9._-]+)?|codex|codex-mini-latest)$/i.test(value)) {
       return null
     }
     value = value.toLowerCase()

@@ -3,6 +3,7 @@ import type {
   AlertRow,
   AppSettings,
   BurnPoint,
+  CollectorHealth,
   DailyUsagePoint,
   ModelMixItem,
   OverviewMetrics,
@@ -32,6 +33,12 @@ export default function App() {
   const [rangeDays, setRangeDays] = useState<RangeDays>(7)
   const [search, setSearch] = useState('')
   const [searchDebounced, setSearchDebounced] = useState('')
+  const [selectedDay, setSelectedDay] = useState<string | undefined>()
+  const [selectedModel, setSelectedModel] = useState<string | undefined>()
+  const [sessionSort, setSessionSort] = useState<
+    'started_at' | 'tokens_total' | 'api_equiv_usd' | 'duration_ms'
+  >('started_at')
+  const [sessionLimit, setSessionLimit] = useState(100)
   const [burnProvider, setBurnProvider] = useState<ProviderId>('grok')
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -47,12 +54,17 @@ export default function App() {
   const [projections, setProjections] = useState<ProjectionCard[]>([])
   const [alerts, setAlerts] = useState<AlertRow[]>([])
   const [settings, setSettings] = useState<AppSettings | null>(null)
+  const [collectorHealth, setCollectorHealth] = useState<CollectorHealth[]>([])
 
   const filter = useMemo(
     () => ({
       provider,
       range_days: rangeDays,
-      search: searchDebounced || undefined
+      search: searchDebounced || undefined,
+      sort_by: 'started_at' as const,
+      sort_dir: 'desc' as const,
+      limit: 500,
+      offset: 0
     }),
     [provider, rangeDays, searchDebounced]
   )
@@ -61,6 +73,10 @@ export default function App() {
     const t = window.setTimeout(() => setSearchDebounced(search), 250)
     return () => window.clearTimeout(t)
   }, [search])
+
+  useEffect(() => {
+    setSessionLimit(100)
+  }, [provider, rangeDays, searchDebounced, selectedDay, selectedModel, sessionSort])
 
   const showToast = (msg: string) => {
     setToast(msg)
@@ -76,7 +92,7 @@ export default function App() {
     try {
       setError(null)
       const base = { provider, range_days: rangeDays }
-      const [ov, q, d, b, m, s, p, a, st] = await Promise.all([
+      const [ov, q, d, b, m, s, p, a, st, health] = await Promise.all([
         window.api.getOverview(base),
         window.api.getQuotas(),
         window.api.getDailyUsage(base),
@@ -84,11 +100,18 @@ export default function App() {
         window.api.getModelMix(base),
         window.api.getSessions({
           ...base,
-          search: searchDebounced || undefined
+          search: searchDebounced || undefined,
+          day: selectedDay,
+          model: selectedModel,
+          sort_by: sessionSort,
+          sort_dir: 'desc',
+          limit: sessionLimit,
+          offset: 0
         }),
         window.api.getProjections(),
         window.api.listAlerts(),
-        window.api.getSettings()
+        window.api.getSettings(),
+        window.api.getCollectorHealth()
       ])
       setOverview(ov)
       setQuotas(q)
@@ -99,12 +122,13 @@ export default function App() {
       setProjections(p)
       setAlerts(a)
       setSettings(st)
+      setCollectorHealth(health)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
-  }, [provider, rangeDays, searchDebounced, burnProvider])
+  }, [provider, rangeDays, searchDebounced, burnProvider, selectedDay, selectedModel, sessionSort, sessionLimit])
 
   useEffect(() => {
     void load()
@@ -171,6 +195,12 @@ export default function App() {
     const next = await window.api.setSettings(partial)
     setSettings(next)
     showToast('Settings saved')
+    await load()
+  }
+
+  const rescanProvider = async (id: ProviderId) => {
+    const result = await window.api.rescanProvider({ provider: id })
+    showToast(`${PROVIDER_META[id].short}: ${result.upserted} sessions scanned`)
     await load()
   }
 
@@ -302,8 +332,11 @@ export default function App() {
                 {formatTokens(overview.tokens_total)}
               </div>
               <div className="metric-sub">
-                ~{formatTokens(overview.avg_daily_tokens)}/day ·{' '}
-                {rangeLabel(overview.range_days)}
+                {formatTokens(overview.token_breakdown.input)} in ·{' '}
+                {formatTokens(overview.token_breakdown.output)} out ·{' '}
+                {formatTokens(overview.token_breakdown.cached)} cached ·{' '}
+                {formatTokens(overview.token_breakdown.reasoning)} reasoning ·{' '}
+                {overview.token_breakdown.model_calls} calls
               </div>
             </article>
             <article className="metric panel">
@@ -402,10 +435,16 @@ export default function App() {
               <div className="chart-head">
                 <div>
                   <h4>Daily token usage</h4>
-                  <p>From local usage_daily rollups</p>
+                  <p>Timezone-aware aggregation from measured local sessions</p>
                 </div>
               </div>
-              <DailyChart data={daily} />
+              <DailyChart
+                data={daily}
+                selectedDay={selectedDay}
+                onSelectDay={(day) =>
+                  setSelectedDay(day === selectedDay ? undefined : day)
+                }
+              />
             </article>
             <article className="chart-card panel">
               <div className="chart-head">
@@ -437,7 +476,13 @@ export default function App() {
                   <p>Share of observed token volume</p>
                 </div>
               </div>
-              <ModelDonut models={models} />
+              <ModelDonut
+                models={models}
+                selectedModel={selectedModel}
+                onSelectModel={(model) =>
+                  setSelectedModel(model === selectedModel ? undefined : model)
+                }
+              />
             </article>
             <article className="sessions-card panel">
               <div className="chart-head">
@@ -446,6 +491,18 @@ export default function App() {
                   <p>Project basenames only · no content · {sessions.length} shown</p>
                 </div>
                 <div className="table-tools">
+                  <select
+                    aria-label="Sort sessions"
+                    value={sessionSort}
+                    onChange={(e) =>
+                      setSessionSort(e.target.value as typeof sessionSort)
+                    }
+                  >
+                    <option value="started_at">Newest</option>
+                    <option value="tokens_total">Most tokens</option>
+                    <option value="api_equiv_usd">Highest API-equiv</option>
+                    <option value="duration_ms">Longest duration</option>
+                  </select>
                   <input
                     type="text"
                     placeholder="Search project or model"
@@ -454,6 +511,20 @@ export default function App() {
                   />
                 </div>
               </div>
+              {selectedDay || selectedModel ? (
+                <div className="active-filters">
+                  {selectedDay ? (
+                    <button type="button" onClick={() => setSelectedDay(undefined)}>
+                      Day: {selectedDay} ×
+                    </button>
+                  ) : null}
+                  {selectedModel ? (
+                    <button type="button" onClick={() => setSelectedModel(undefined)}>
+                      Model: {selectedModel} ×
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="table-wrap">
                 <table>
                   <thead>
@@ -461,15 +532,20 @@ export default function App() {
                       <th>Provider</th>
                       <th>Project</th>
                       <th>Model</th>
-                      <th className="num">Tokens</th>
+                      <th className="num">Input</th>
+                      <th className="num">Output</th>
+                      <th className="num">Cached</th>
+                      <th className="num">Reasoning</th>
+                      <th className="num">Calls</th>
                       <th className="num">API-equiv</th>
+                      <th className="num">Provider cost</th>
                       <th className="num">Duration</th>
                     </tr>
                   </thead>
                   <tbody>
                     {sessions.length === 0 ? (
                       <tr>
-                        <td colSpan={6} style={{ color: 'var(--muted)' }}>
+                        <td colSpan={11} style={{ color: 'var(--muted)' }}>
                           No sessions in this view
                         </td>
                       </tr>
@@ -489,13 +565,34 @@ export default function App() {
                           <td>{s.project}</td>
                           <td>{s.model}</td>
                           <td className="num">
-                            {s.tokens_total != null
-                              ? formatTokens(s.tokens_total)
+                            {s.tokens_in != null
+                              ? formatTokens(s.tokens_in)
                               : '—'}
                           </td>
                           <td className="num">
+                            {s.tokens_out != null
+                              ? formatTokens(s.tokens_out)
+                              : '—'}
+                          </td>
+                          <td className="num">
+                            {s.tokens_cached != null
+                              ? formatTokens(s.tokens_cached)
+                              : '—'}
+                          </td>
+                          <td className="num">
+                            {s.tokens_reasoning != null
+                              ? formatTokens(s.tokens_reasoning)
+                              : '—'}
+                          </td>
+                          <td className="num">{s.model_calls ?? '—'}</td>
+                          <td className="num">
                             {s.api_equiv_usd != null
                               ? formatCurrency(s.api_equiv_usd, currency, locale)
+                              : '—'}
+                          </td>
+                          <td className="num">
+                            {s.provider_cost_usd != null
+                              ? formatCurrency(s.provider_cost_usd, currency, locale)
                               : '—'}
                           </td>
                           <td className="num">{formatDuration(s.duration_ms)}</td>
@@ -505,6 +602,15 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+              {sessions.length >= sessionLimit && sessionLimit < 500 ? (
+                <button
+                  className="btn load-more"
+                  type="button"
+                  onClick={() => setSessionLimit((n) => Math.min(n + 100, 500))}
+                >
+                  Load more sessions
+                </button>
+              ) : null}
             </article>
           </div>
         </section>
@@ -561,11 +667,56 @@ export default function App() {
           <SettingsPanel settings={settings} onChange={saveSettings} />
         ) : null}
 
+        <section className="section">
+          <div className="section-head">
+            <div>
+              <h3>Collector health</h3>
+              <p>Local source watchers, last successful parse, and per-provider rescan</p>
+            </div>
+          </div>
+          <div className="health-grid">
+            {collectorHealth.map((health) => (
+              <article className="panel health-card" key={health.provider}>
+                <div className="health-head">
+                  <strong>{PROVIDER_META[health.provider].name}</strong>
+                  <span
+                    className={`badge ${
+                      health.watcher_status === 'watching'
+                        ? 'live'
+                        : health.watcher_status === 'error'
+                          ? 'error'
+                          : 'info'
+                    }`}
+                  >
+                    {health.watcher_status}
+                  </span>
+                </div>
+                <p>{health.source_label} · {health.sessions_seen} sessions seen</p>
+                <p>
+                  {health.last_success_at
+                    ? `Last success ${new Date(health.last_success_at).toLocaleString()}`
+                    : 'No successful scan yet'}
+                </p>
+                {health.last_error ? (
+                  <p className="health-error">{health.last_error}</p>
+                ) : null}
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => void rescanProvider(health.provider)}
+                >
+                  Rescan
+                </button>
+              </article>
+            ))}
+          </div>
+        </section>
+
         <footer className="footer">
           <span>
             Live quota via CLI auth · plans per-user · rate card for API-equiv only.
           </span>
-          <span>Electron · SQLite · metadata only · Phase 3</span>
+          <span>Electron · SQLite · metadata only · Phase 4</span>
         </footer>
       </main>
 

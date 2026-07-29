@@ -18,6 +18,7 @@ export function mapCodexUsage(
 
   const rateLimit = asRecord(root.rate_limit)
   const primary = asRecord(rateLimit?.primary_window)
+  const secondary = asRecord(rateLimit?.secondary_window)
 
   const usedRaw = primary?.used_percent
   const used =
@@ -40,6 +41,10 @@ export function mapCodexUsage(
   }
 
   const plan = resolvePlan(opts.settings, 'codex', planType, 'api')
+  const windows = [
+    mapWindow(primary, 'Primary'),
+    mapWindow(secondary, 'Secondary')
+  ].filter((window): window is NonNullable<QuotaSnapshot['windows']>[number] => window != null)
 
   const remainingTextParts: string[] = []
   if (opts.resetCreditsAvailable) {
@@ -61,9 +66,39 @@ export function mapCodexUsage(
     stale: false,
     live_captured_at:
       used != null ? (opts.capturedAt ?? new Date().toISOString()) : null,
+    windows: windows.length ? windows : undefined,
     remaining_text: remainingTextParts.length
       ? remainingTextParts.join(' · ')
       : undefined
+  }
+}
+
+function mapWindow(
+  window: Record<string, unknown> | null,
+  fallbackLabel: string
+): NonNullable<QuotaSnapshot['windows']>[number] | null {
+  if (!window) return null
+  const usedRaw = window.used_percent
+  const used =
+    typeof usedRaw === 'number' && Number.isFinite(usedRaw)
+      ? clampPct(usedRaw)
+      : null
+  const seconds =
+    typeof window.limit_window_seconds === 'number'
+      ? window.limit_window_seconds
+      : null
+  let reset: string | null = null
+  if (typeof window.reset_at === 'number') {
+    reset = new Date(window.reset_at * 1000).toISOString()
+  } else if (typeof window.reset_after_seconds === 'number') {
+    reset = new Date(Date.now() + window.reset_after_seconds * 1000).toISOString()
+  }
+  if (used == null && seconds == null && reset == null) return null
+  return {
+    label: windowLabelFromSeconds(seconds) ?? fallbackLabel,
+    used_pct: used,
+    remaining_pct: used == null ? null : clampPct(100 - used),
+    reset_at: reset
   }
 }
 
