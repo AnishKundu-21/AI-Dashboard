@@ -28,7 +28,7 @@ This project builds that pane as a **desktop app** that reuses the logins you al
 | Live data research | **Validated** for Grok + Codex; Claude when CLI logged in |
 | Worked example | [Real demo run (Grok 33% / Codex plus 0% / Claude n/a)](#worked-example--real-demo-run-2026-07-28) |
 | Research demos | Demo files at project root |
-| Electron app (`app/`) | **Not started** (Phase 0) |
+| Electron app (`app/`) | **Phase 3** — analytics parity + settings + pricing (`app/`) |
 
 Read **[`PLAN.md`](./PLAN.md)** for full architecture, phases, IPC, schema, risks, and collaboration rules.
 
@@ -229,7 +229,7 @@ Dashboard/
 ├── ai-usage-dashboard-prototype/      ← UI/UX reference (sample data)
 │   ├── index.html
 │   └── README.md
-└── app/                               ← Electron product (create in Phase 0)
+└── app/                               ← Electron product (Phase 3 implementation)
 ```
 
 ---
@@ -304,20 +304,21 @@ This is the **feature checklist** for MVP-D, not production data.
 
 ---
 
-## Quick start — Electron app (after Phase 0)
-
-When `app/` exists (see plan):
+## Quick start — Electron app
 
 ```powershell
 cd app
 npm install
-npm run dev      # Electron + Vite HMR
+# If better-sqlite3 fails on Node 25+: npm install --ignore-scripts
+# then: node node_modules/electron/install.js ; npm run rebuild:native
+npm run dev      # Electron + Vite HMR (real local data; empty states when unavailable)
 npm run build
-npm run dist     # Windows installer
+npm run typecheck
 npm test
+npm run dist     # Windows installer
 ```
 
-Details and scripts will live in `app/README.md` once scaffolded.
+Details: [`app/README.md`](./app/README.md).
 
 ---
 
