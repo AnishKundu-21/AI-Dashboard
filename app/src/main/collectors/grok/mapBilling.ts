@@ -14,13 +14,18 @@ export function mapGrokBilling(
   const root = asRecord(body) ?? {}
   const config = asRecord(root.config) ?? root
 
+  const period = asRecord(config.currentPeriod)
+
+  // API omits creditUsagePercent entirely when it's exactly 0 (e.g. right
+  // after a quota reset) rather than sending 0 — a present currentPeriod
+  // confirms this is a real billing response, not a malformed/empty one.
   const usedRaw = config.creditUsagePercent
   const used =
     typeof usedRaw === 'number' && Number.isFinite(usedRaw)
       ? clampPct(usedRaw)
-      : null
-
-  const period = asRecord(config.currentPeriod)
+      : period != null
+        ? 0
+        : null
   const periodType =
     typeof period?.type === 'string' ? period.type : null
   const resetAt =

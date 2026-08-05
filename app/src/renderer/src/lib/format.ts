@@ -35,6 +35,27 @@ export function formatCurrency(
   }
 }
 
+/** Short relative label such as "just now", "12m ago", "3d ago". */
+export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
+  if (!iso) return '—'
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return '—'
+  const diff = Math.max(0, now - t)
+  const min = Math.floor(diff / 60_000)
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.floor(hr / 24)
+  return day < 30 ? `${day}d ago` : new Date(t).toLocaleDateString()
+}
+
+/** Percentage change between two windows; null when there is no usable baseline. */
+export function pctDelta(current: number, previous: number): number | null {
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return null
+  return ((current - previous) / previous) * 100
+}
+
 export function formatDuration(ms: number | null): string {
   if (ms == null) return '—'
   const m = Math.round(ms / 60_000)
@@ -44,16 +65,20 @@ export function formatDuration(ms: number | null): string {
   return rem ? `${h}h ${rem}m` : `${h}h`
 }
 
+/**
+ * "Live" is shown only when a provider usage API returned real figures —
+ * anything derived locally is labelled as an estimate.
+ */
 export function confidenceBadge(
   confidence: string,
   authConnected: boolean,
   stale = false
 ): { label: string; className: string } {
-  if (!authConnected) return { label: 'Not connected', className: 'info' }
-  if (stale) return { label: 'AUTH LIVE · STALE', className: 'warn' }
-  if (confidence === 'live') return { label: 'AUTH LIVE', className: 'good' }
-  if (confidence === 'estimate') return { label: 'LOCAL ESTIMATE', className: 'warn' }
-  return { label: 'Unknown', className: 'info' }
+  if (!authConnected) return { label: 'Not connected', className: 'plain' }
+  if (stale) return { label: 'Live · stale', className: 'warn' }
+  if (confidence === 'live') return { label: 'Live', className: 'good' }
+  if (confidence === 'estimate') return { label: 'Estimate', className: 'warn' }
+  return { label: 'Unknown', className: 'plain' }
 }
 
 export const CURRENCY_OPTIONS = [

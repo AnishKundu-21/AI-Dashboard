@@ -51,6 +51,32 @@ describe('mapGrokBilling', () => {
     expect(snap.auth_connected).toBe(true)
   })
 
+  it('treats an omitted creditUsagePercent as 0% live usage', () => {
+    const resetFixture = {
+      config: {
+        currentPeriod: {
+          type: 'USAGE_PERIOD_TYPE_WEEKLY',
+          start: '2026-08-04T16:19:41.409613+00:00',
+          end: '2026-08-11T16:19:41.409613+00:00'
+        },
+        onDemandCap: { val: 0 },
+        onDemandUsed: { val: 0 },
+        isUnifiedBillingUser: true,
+        prepaidBalance: { val: 0 },
+        billingPeriodStart: '2026-08-04T16:19:41.409613+00:00',
+        billingPeriodEnd: '2026-08-11T16:19:41.409613+00:00'
+      }
+    }
+    const snap = mapGrokBilling(resetFixture, {
+      settings,
+      authConnected: true,
+      capturedAt: '2026-08-04T17:20:00.000Z'
+    })
+    expect(snap.confidence).toBe('live')
+    expect(snap.used_pct).toBe(0)
+    expect(snap.remaining_pct).toBe(100)
+  })
+
   it('respects manual plan override', () => {
     const withPlan: AppSettings = {
       ...settings,

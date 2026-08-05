@@ -25,6 +25,22 @@ let watchers: FSWatcher[] = []
 const watchedProviders = new Set<ProviderId>()
 const sessionChangeTimers = new Map<ProviderId, NodeJS.Timeout>()
 let quotaChangeTimer: NodeJS.Timeout | null = null
+let lastQuotaAttemptAt = 0
+// Reactive file-watcher triggers (constant during active coding sessions) can
+// otherwise fire far more often than provider quota APIs tolerate, causing
+// repeated 429s and a live/stale flicker. The base poll timer already covers
+// the 15-60s cadence; this only throttles watcher-triggered refreshes.
+const MIN_REACTIVE_QUOTA_INTERVAL_MS = 20_000
+
+// Claude's /api/oauth/usage is an undocumented, reverse-engineered endpoint
+// with a much stricter rate limit than Grok/Codex's — the base 15-60s poll
+// cadence alone trips repeated 429s during active Claude Code usage. Gate its
+// network calls to a longer floor regardless of how often the poll loop runs;
+// other providers are unaffected.
+const NETWORK_QUOTA_MIN_INTERVAL_MS: Partial<Record<ProviderId, number>> = {
+  claude: 60_000
+}
+const lastNetworkAttemptByProvider = new Map<ProviderId, number>()
 
 export function initCollectors(): void {
   if (!registered) {
@@ -43,6 +59,7 @@ export async function refreshAllQuotas(): Promise<QuotaSnapshot[]> {
     return getLatestQuotas(getDb())
   }
   refreshing = true
+  lastQuotaAttemptAt = Date.now()
   try {
     initCollectors()
     const db = getDb()
@@ -56,6 +73,12 @@ export async function refreshAllQuotas(): Promise<QuotaSnapshot[]> {
     )
 
     for (const adapter of listAdapters()) {
+      const minInterval = NETWORK_QUOTA_MIN_INTERVAL_MS[adapter.id]
+      if (minInterval) {
+        const lastAttempt = lastNetworkAttemptByProvider.get(adapter.id) ?? 0
+        if (Date.now() - lastAttempt < minInterval) continue
+        lastNetworkAttemptByProvider.set(adapter.id, Date.now())
+      }
       try {
         const refreshed = await adapter.refreshQuota(ctx)
         const previous = previousByProvider.get(adapter.id)
@@ -99,6 +122,10 @@ function preserveLastLiveSnapshot(
   if (!refreshFailed || !hasPreviousLive || !previous) return refreshed
 
   const liveCapturedAt = previous.live_captured_at ?? previous.captured_at
+  // previous.source may itself already be a stale-fallback message from an
+  // earlier poll — strip any prior "· stale since ..." suffix so this string
+  // doesn't grow unbounded across repeated failed polls.
+  const baseLiveSource = previous.source.split(' · stale since ')[0]
   return {
     ...previous,
     captured_at: refreshed.captured_at,
@@ -106,7 +133,7 @@ function preserveLastLiveSnapshot(
     plan_source: refreshed.plan_source ?? previous.plan_source,
     stale: true,
     live_captured_at: liveCapturedAt,
-    source: `${previous.source} · stale since ${liveCapturedAt} · ${refreshed.source}`
+    source: `${baseLiveSource} · stale since ${liveCapturedAt} · ${refreshed.source}`
   }
 }
 
@@ -333,6 +360,11 @@ function queueQuotaRefresh(delayMs: number): void {
   if (quotaChangeTimer) clearTimeout(quotaChangeTimer)
   quotaChangeTimer = setTimeout(() => {
     quotaChangeTimer = null
+    const sinceLast = Date.now() - lastQuotaAttemptAt
+    if (sinceLast < MIN_REACTIVE_QUOTA_INTERVAL_MS) {
+      queueQuotaRefresh(MIN_REACTIVE_QUOTA_INTERVAL_MS - sinceLast)
+      return
+    }
     void refreshAllQuotas()
   }, delayMs)
 }
@@ -344,13 +376,21 @@ export function stopQuotaPolling(): void {
   }
 }
 
+// Claude detects its plan from the local credentials file (plan_source
+// 'auth'), not a usage API (plan_source 'api') like Codex — both are real
+// auto-detections and should be remembered for the Settings panel.
+const AUTO_DETECTED_PLAN_SOURCES: ReadonlySet<QuotaSnapshot['plan_source']> = new Set([
+  'api',
+  'auth'
+])
+
 function rememberDetectedPlan(snap: QuotaSnapshot): void {
-  if (!snap.plan_label || snap.plan_source !== 'api') return
+  if (!snap.plan_label || !AUTO_DETECTED_PLAN_SOURCES.has(snap.plan_source)) return
   const db = getDb()
   const settings = getSettings(db)
   const current = settings.plans?.[snap.provider]
   if (current?.mode === 'manual') return
-  if (current?.detected === snap.plan_label && current?.source === 'api') return
+  if (current?.detected === snap.plan_label && current?.source === snap.plan_source) return
 
   setSettings(db, {
     plans: {
@@ -359,7 +399,7 @@ function rememberDetectedPlan(snap: QuotaSnapshot): void {
         mode: current?.mode ?? 'auto',
         value: current?.value,
         detected: snap.plan_label,
-        source: 'api'
+        source: snap.plan_source
       }
     }
   })

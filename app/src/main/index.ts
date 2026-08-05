@@ -32,7 +32,7 @@ function createWindow(): void {
     minHeight: 640,
     show: false,
     title: 'AI Usage Dashboard',
-    backgroundColor: '#08090b',
+    backgroundColor: '#07080a',
     autoHideMenuBar: true,
     icon: windowIcon,
     webPreferences: {

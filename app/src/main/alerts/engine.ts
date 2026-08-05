@@ -1,15 +1,17 @@
 import type Database from 'better-sqlite3'
 import { Notification } from 'electron'
 import type { QuotaSnapshot } from '../../shared/types'
-import { getLatestQuotas } from '../db/queries'
+import { applyClaudeBurnWindow, getLatestQuotas } from '../db/queries'
 import { getSettings } from '../db/queries'
 import { willExhaustWithinDays } from '../analytics/projections'
 
 /**
  * Simple rule engine. Creates undismissed alerts once per (rule_id, provider, day).
+ * Claude's snapshot is remapped to its weekly window first — its raw used_pct
+ * tracks the 5h session window, which resets too often to drive burn alerts.
  */
 export function evaluateAlerts(db: Database.Database): void {
-  const quotas = getLatestQuotas(db)
+  const quotas = getLatestQuotas(db).map(applyClaudeBurnWindow)
   const day = new Date().toISOString().slice(0, 10)
 
   for (const q of quotas) {

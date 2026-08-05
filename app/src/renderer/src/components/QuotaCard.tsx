@@ -1,120 +1,97 @@
 import type { QuotaSnapshot } from '@shared/types'
 import { PROVIDER_META } from '@shared/providers'
-import { confidenceBadge } from '../lib/format'
+import { confidenceBadge, relativeTime } from '../lib/format'
+import { Gauge } from './Gauge'
 
 export function QuotaCard({ quota }: { quota: QuotaSnapshot }) {
   const meta = PROVIDER_META[quota.provider]
   const badge = confidenceBadge(quota.confidence, quota.auth_connected, quota.stale)
   const used = quota.used_pct
-  const remaining = quota.remaining_pct
+  const connected = quota.auth_connected
 
-  const remainingLabel =
-    remaining != null
-      ? `${Math.round(remaining)}%`
-      : quota.auth_connected
-        ? '—'
-        : '—'
-
-  const planLabel =
-    quota.plan_label ??
-    (quota.plan_source === 'unknown' ? 'Unknown' : '—')
-
-  const productBits =
+  const products =
     quota.products &&
     Object.entries(quota.products)
       .map(([k, v]) => `${k.replace('Grok', '')} ${v}%`)
       .join(' · ')
 
   return (
-    <article className="quota-card panel" data-provider={quota.provider}>
-      <div className="provider-head">
+    <article className="panel quota-card" style={{ ['--tone' as string]: meta.color }}>
+      <div className="quota-head">
         <div className="provider-name">
-          <i className={`provider-dot ${quota.provider}`} />
+          <i className="swatch" style={{ background: meta.color }} />
           <div>
-            <h4>{meta.name}</h4>
-            <p>
-              Plan: {planLabel}
-              {quota.plan_source === 'api' ? ' (detected)' : ''}
+            <h3>{meta.name}</h3>
+            <div className="plan">
+              {quota.plan_label ?? 'Plan unknown'}
+              {quota.plan_source === 'api' ? ' · detected' : ''}
+            </div>
+          </div>
+        </div>
+        <span className={`status ${badge.className}`}>{badge.label}</span>
+      </div>
+
+      <div className="quota-body">
+        <Gauge value={connected ? quota.remaining_pct : null} label={connected ? 'remaining' : 'no auth'} />
+        <div className="quota-meta">
+          {connected ? (
+            <>
+              <div className="meter">
+                <i style={{ width: `${Math.min(100, Math.max(0, used ?? 0))}%` }} />
+              </div>
+              <div className="kv-row">
+                <span>Used</span>
+                <b>{used != null ? `${Math.round(used)}%` : 'no live figure'}</b>
+              </div>
+              <div className="kv-row">
+                <span>Window</span>
+                <b title={quota.window_label ?? undefined}>{quota.window_label ?? '—'}</b>
+              </div>
+              <div className="kv-row">
+                <span>Resets</span>
+                <b>
+                  {quota.reset_at
+                    ? new Date(quota.reset_at).toLocaleDateString(undefined, {
+                        month: 'short',
+                        day: 'numeric'
+                      })
+                    : '—'}
+                </b>
+              </div>
+              {products ? (
+                <div className="kv-row">
+                  <span>Products</span>
+                  <b>{products}</b>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <p style={{ color: 'var(--text-3)', fontSize: 11.5, lineHeight: 1.55 }}>
+              Install the CLI and sign in, then refresh. Auth tokens are read in the main
+              process and never reach this window.
             </p>
-          </div>
-        </div>
-        <span className={`badge ${badge.className}`}>{badge.label}</span>
-      </div>
-
-      {!quota.auth_connected ? (
-        <>
-          <div className="quota-number">
-            <strong style={{ fontSize: 22 }}>Not connected</strong>
-            <span>Install CLI + login, then refresh</span>
-          </div>
-          <div className="progress">
-            <div style={{ width: '0%' }} />
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="quota-number">
-            <strong>{remainingLabel}</strong>
-            <span>
-              remaining
-              <br />
-              {used != null ? `${Math.round(used)}% used` : 'no live figure'}
-            </span>
-          </div>
-          <div className="progress">
-            <div style={{ width: `${used ?? 0}%` }} />
-          </div>
-        </>
-      )}
-
-      <div className="quota-mini">
-        <div className="mini">
-          <span>Window</span>
-          <strong>{quota.window_label ?? '—'}</strong>
-        </div>
-        <div className="mini">
-          <span>Reset</span>
-          <strong>
-            {quota.reset_at
-              ? new Date(quota.reset_at).toLocaleDateString(undefined, {
-                  month: 'short',
-                  day: 'numeric'
-                })
-              : '—'}
-          </strong>
-        </div>
-        <div className="mini">
-          <span>Confidence</span>
-          <strong>{quota.stale ? 'stale live' : quota.confidence}</strong>
+          )}
         </div>
       </div>
-
-      {productBits ? (
-        <p style={{ margin: '12px 0 0', color: 'var(--muted)', fontSize: 11 }}>
-          {productBits}
-        </p>
-      ) : null}
 
       {quota.windows && quota.windows.length > 1 ? (
         <div className="quota-windows">
-          {quota.windows.map((window, index) => (
-            <div className="mini" key={`${window.label}-${index}`}>
-              <span>{window.label}</span>
-              <strong>
-                {window.remaining_pct != null
-                  ? `${Math.round(window.remaining_pct)}% left`
-                  : '—'}
-              </strong>
+          {quota.windows.map((w, i) => (
+            <div key={`${w.label}-${i}`}>
+              <span title={w.label}>{w.label}</span>
+              <strong>{w.remaining_pct != null ? `${Math.round(w.remaining_pct)}%` : '—'}</strong>
             </div>
           ))}
         </div>
       ) : null}
 
-      <div className="source-row">
-        source: {quota.source}
-        {quota.stale && quota.live_captured_at
-          ? ` · last live ${new Date(quota.live_captured_at).toLocaleString()}`
-          : ''}
+      <div className="quota-foot">
+        <span title={quota.source}>{quota.source}</span>
+        <span>
+          {quota.stale && quota.live_captured_at
+            ? `live ${relativeTime(quota.live_captured_at)}`
+            : relativeTime(quota.captured_at)}
+        </span>
       </div>
     </article>
   )

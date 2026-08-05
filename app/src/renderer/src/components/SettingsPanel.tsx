@@ -8,6 +8,17 @@ const PLAN_PRESETS: Record<ProviderId, string[]> = {
   codex: ['plus', 'pro', 'team', 'free', 'Custom']
 }
 
+const TIMEZONES = [
+  { value: 'system', label: 'System timezone' },
+  { value: 'UTC', label: 'UTC' },
+  { value: 'Asia/Calcutta', label: 'India (Asia/Calcutta)' },
+  { value: 'America/New_York', label: 'New York' },
+  { value: 'America/Los_Angeles', label: 'Los Angeles' },
+  { value: 'Europe/London', label: 'London' },
+  { value: 'Europe/Berlin', label: 'Berlin' },
+  { value: 'Asia/Tokyo', label: 'Tokyo' }
+]
+
 interface Props {
   settings: AppSettings
   onChange: (next: Partial<AppSettings>) => Promise<void>
@@ -33,226 +44,207 @@ export function SettingsPanel({ settings, onChange }: Props) {
     await onChange({
       plans: {
         ...settings.plans,
-        [provider]: {
-          ...current,
-          mode: 'manual',
-          value: value === 'Custom' ? '' : value,
-          source: 'user'
-        }
+        [provider]: { ...current, mode: 'manual', value: value === 'Custom' ? '' : value, source: 'user' }
       }
     })
   }
 
   return (
-    <section className="section" id="settings">
-      <div className="section-head">
-        <div>
-          <h3>Settings</h3>
-          <p>Currency, notifications, plan labels, and network quota refresh</p>
-        </div>
-        <span className="badge info">Stored in %APPDATA%</span>
-      </div>
-      <div className="settings-grid">
-        <article className="sync-card panel">
-          <div className="chart-head">
-            <div>
-              <h4>Display &amp; currency</h4>
-              <p>API-equivalent costs convert from USD with approximate FX</p>
-            </div>
-          </div>
-          <div className="field">
-            <label htmlFor="currency">Currency</label>
-            <select
-              id="currency"
-              value={settings.display_currency}
-              onChange={(e) => void onChange({ display_currency: e.target.value })}
-            >
-              {CURRENCY_OPTIONS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="locale">Locale</label>
-            <select
-              id="locale"
-              value={settings.locale}
-              onChange={(e) => void onChange({ locale: e.target.value })}
-            >
-              {LOCALE_OPTIONS.map((l) => (
-                <option key={l.value} value={l.value}>
-                  {l.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="timezone">Usage-day timezone</label>
-            <select
-              id="timezone"
-              value={settings.timezone}
-              onChange={(e) => void onChange({ timezone: e.target.value })}
-            >
-              <option value="system">System timezone</option>
-              <option value="UTC">UTC</option>
-              <option value="Asia/Calcutta">India (Asia/Calcutta)</option>
-              <option value="America/New_York">New York</option>
-              <option value="America/Los_Angeles">Los Angeles</option>
-              <option value="Europe/London">London</option>
-              <option value="Europe/Berlin">Berlin</option>
-              <option value="Asia/Tokyo">Tokyo</option>
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="retention">Local retention (days)</label>
-            <select
-              id="retention"
-              value={settings.retention_days}
-              onChange={(e) =>
-                void onChange({ retention_days: Number(e.target.value) })
-              }
-            >
-              {[30, 90, 180, 365].map((d) => (
-                <option key={d} value={d}>
-                  {d} days
-                </option>
-              ))}
-            </select>
-          </div>
-        </article>
-
-        <article className="privacy-card panel">
-          <div className="chart-head">
-            <div>
-              <h4>Privacy &amp; network</h4>
-              <p>Prompt content is never stored — hard-coded off</p>
-            </div>
-          </div>
-          <div className="toggle-row">
-            <div>
-              <strong>Store prompts and responses</strong>
-              <span>Always off in v1. Usage metrics do not need content.</span>
-            </div>
-            <button
-              className="switch"
-              type="button"
-              disabled
-              aria-label="Prompt storage always off"
-              aria-pressed="false"
-            />
-          </div>
-          <div className="toggle-row">
-            <div>
-              <strong>Windows notifications</strong>
-              <span>Toast when a new burn rule fires</span>
-            </div>
-            <button
-              className={`switch${settings.notify_enabled ? ' on' : ''}`}
-              type="button"
-              aria-pressed={settings.notify_enabled}
-              onClick={() =>
-                void onChange({ notify_enabled: !settings.notify_enabled })
-              }
-            />
-          </div>
-          <div className="toggle-row">
-            <div>
-              <strong>Network quota refresh</strong>
-              <span>Call provider usage APIs with your CLI tokens</span>
-            </div>
-            <button
-              className={`switch${settings.network_quota_refresh ? ' on' : ''}`}
-              type="button"
-              aria-pressed={settings.network_quota_refresh}
-              onClick={() =>
-                void onChange({
-                  network_quota_refresh: !settings.network_quota_refresh
-                })
-              }
-            />
-          </div>
-        </article>
-      </div>
-
-      <div className="plan-settings panel" style={{ marginTop: 14, padding: 18 }}>
-        <div className="chart-head">
+    <>
+      <article className="panel">
+        <div className="card-head">
           <div>
-            <h4>Provider plans</h4>
-            <p>
-              Auto-detect from API when possible; optional manual label. Never
-              hard-coded globally.
-            </p>
+            <h3>Display</h3>
+            <p>API-equivalent costs convert from USD using approximate FX rates</p>
           </div>
         </div>
-        <div className="plan-grid">
-          {PROVIDER_IDS.map((id) => {
-            const cfg = settings.plans[id] ?? { mode: 'auto' as const }
-            const presets = PLAN_PRESETS[id]
-            const presetValues = presets.filter((value) => value !== 'Custom')
-            const selectedValue = presetValues.includes(cfg.value ?? '')
-              ? cfg.value
-              : 'Custom'
-            return (
-              <div key={id} className="plan-card">
-                <div className="provider-name" style={{ marginBottom: 10 }}>
-                  <i className={`provider-dot ${id}`} />
-                  <div>
-                    <h4 style={{ margin: 0, fontSize: 13 }}>{PROVIDER_META[id].name}</h4>
-                    <p style={{ margin: '3px 0 0', color: 'var(--muted)', fontSize: 11 }}>
-                      {cfg.detected
-                        ? `Detected: ${cfg.detected}`
-                        : 'No detection yet'}
-                      {cfg.mode === 'manual' && cfg.value
-                        ? ` · showing: ${cfg.value}`
-                        : ''}
-                    </p>
-                  </div>
-                </div>
-                <div className="field">
-                  <label htmlFor={`plan-mode-${id}`}>Mode</label>
-                  <select
-                    id={`plan-mode-${id}`}
-                    value={cfg.mode}
-                    onChange={(e) =>
-                      void setPlanMode(id, e.target.value as 'auto' | 'manual')
-                    }
-                  >
-                    <option value="auto">Auto-detect</option>
-                    <option value="manual">Manual override</option>
-                  </select>
-                </div>
-                {cfg.mode === 'manual' ? (
-                  <div className="field">
-                    <label htmlFor={`plan-value-${id}`}>Plan label</label>
-                    <select
-                      id={`plan-value-${id}`}
-                      value={selectedValue}
-                      onChange={(e) => void setPlanValue(id, e.target.value)}
-                    >
-                      {presets.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                    {selectedValue === 'Custom' && (
-                      <input
-                        style={{ marginTop: 8, width: '100%' }}
-                        type="text"
-                        placeholder="Custom plan name"
-                        value={cfg.value ?? ''}
-                        onChange={(e) => void setPlanValue(id, e.target.value)}
-                      />
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            )
-          })}
+        <div className="card-body">
+          <div className="field-grid">
+            <div className="field">
+              <label htmlFor="currency">Currency</label>
+              <select
+                id="currency"
+                className="select"
+                value={settings.display_currency}
+                onChange={(e) => void onChange({ display_currency: e.target.value })}
+              >
+                {CURRENCY_OPTIONS.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="locale">Locale</label>
+              <select
+                id="locale"
+                className="select"
+                value={settings.locale}
+                onChange={(e) => void onChange({ locale: e.target.value })}
+              >
+                {LOCALE_OPTIONS.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="timezone">Usage-day timezone</label>
+              <select
+                id="timezone"
+                className="select"
+                value={settings.timezone}
+                onChange={(e) => void onChange({ timezone: e.target.value })}
+              >
+                {TIMEZONES.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="retention">Local retention</label>
+              <select
+                id="retention"
+                className="select"
+                value={settings.retention_days}
+                onChange={(e) => void onChange({ retention_days: Number(e.target.value) })}
+              >
+                {[30, 90, 180, 365].map((d) => (
+                  <option key={d} value={d}>
+                    {d} days
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
-      </div>
-    </section>
+      </article>
+
+      <article className="panel">
+        <div className="card-head">
+          <div>
+            <h3>Privacy &amp; network</h3>
+            <p>Prompt content is never stored — the setting is hard-coded off</p>
+          </div>
+          <span className="status plain">Stored in %APPDATA%</span>
+        </div>
+        <div className="toggle-row">
+          <div>
+            <strong>Store prompts and responses</strong>
+            <span>Always off in v1. Usage metrics do not need content.</span>
+          </div>
+          <button
+            className="switch"
+            type="button"
+            disabled
+            aria-label="Prompt storage always off"
+            aria-pressed="false"
+          />
+        </div>
+        <div className="toggle-row">
+          <div>
+            <strong>Windows notifications</strong>
+            <span>Notify when a burn rule fires</span>
+          </div>
+          <button
+            className={`switch${settings.notify_enabled ? ' on' : ''}`}
+            type="button"
+            aria-pressed={settings.notify_enabled}
+            aria-label="Windows notifications"
+            onClick={() => void onChange({ notify_enabled: !settings.notify_enabled })}
+          />
+        </div>
+        <div className="toggle-row">
+          <div>
+            <strong>Network quota refresh</strong>
+            <span>Call provider usage APIs with your CLI tokens</span>
+          </div>
+          <button
+            className={`switch${settings.network_quota_refresh ? ' on' : ''}`}
+            type="button"
+            aria-pressed={settings.network_quota_refresh}
+            aria-label="Network quota refresh"
+            onClick={() =>
+              void onChange({ network_quota_refresh: !settings.network_quota_refresh })
+            }
+          />
+        </div>
+      </article>
+
+      <article className="panel">
+        <div className="card-head">
+          <div>
+            <h3>Provider plans</h3>
+            <p>Auto-detected from the API where possible; override the label if needed</p>
+          </div>
+        </div>
+        <div className="card-body">
+          <div className="grid grid-3">
+            {PROVIDER_IDS.map((id) => {
+              const cfg = settings.plans[id] ?? { mode: 'auto' as const }
+              const presets = PLAN_PRESETS[id]
+              const presetValues = presets.filter((v) => v !== 'Custom')
+              const selected = presetValues.includes(cfg.value ?? '') ? cfg.value : 'Custom'
+              return (
+                <div key={id} className="plan-card">
+                  <header>
+                    <i className="swatch" style={{ background: PROVIDER_META[id].color }} />
+                    <div>
+                      <h4>{PROVIDER_META[id].name}</h4>
+                      <p>
+                        {cfg.detected ? `Detected: ${cfg.detected}` : 'No detection yet'}
+                        {cfg.mode === 'manual' && cfg.value ? ` · showing ${cfg.value}` : ''}
+                      </p>
+                    </div>
+                  </header>
+                  <div className="field">
+                    <label htmlFor={`plan-mode-${id}`}>Mode</label>
+                    <select
+                      id={`plan-mode-${id}`}
+                      className="select"
+                      value={cfg.mode}
+                      onChange={(e) => void setPlanMode(id, e.target.value as 'auto' | 'manual')}
+                    >
+                      <option value="auto">Auto-detect</option>
+                      <option value="manual">Manual override</option>
+                    </select>
+                  </div>
+                  {cfg.mode === 'manual' ? (
+                    <div className="field">
+                      <label htmlFor={`plan-value-${id}`}>Plan label</label>
+                      <select
+                        id={`plan-value-${id}`}
+                        className="select"
+                        value={selected}
+                        onChange={(e) => void setPlanValue(id, e.target.value)}
+                      >
+                        {presets.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                      {selected === 'Custom' ? (
+                        <input
+                          className="input"
+                          type="text"
+                          placeholder="Custom plan name"
+                          value={cfg.value ?? ''}
+                          onChange={(e) => void setPlanValue(id, e.target.value)}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </article>
+    </>
   )
 }

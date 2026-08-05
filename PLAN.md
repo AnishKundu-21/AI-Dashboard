@@ -885,9 +885,16 @@ Implementation update (2026-07-29): the app now includes provider-neutral detail
 token accounting for Grok/Codex/Claude, local filesystem push updates, provider-only
 rescans, collector health, timezone-aware ranges, chart/model drill-down, bounded
 session pagination/sorting, a sandboxed preload, trusted IPC senders, branded Windows
-assets, and an optional generic HTTPS update feed. Claude remaining subscription quota
-continues to use the honest estimate/unknown state unless Anthropic exposes a supported
-authenticated quota source.
+assets, and an optional generic HTTPS update feed.
+
+Implementation update (2026-08-04): Claude Code now reports live quota via the same
+OAuth token Claude Code itself uses (`~/.claude/.credentials.json`) against
+`api.anthropic.com/api/oauth/usage`, mapping the `five_hour` (session) window as
+primary and `seven_day`/`seven_day_opus`/`seven_day_sonnet` as secondary windows —
+matching the Grok/Codex live-quota pattern. Also fixed two live-refresh bugs found
+via real device testing: the grok/codex stale-fallback source string grew unbounded
+across repeated failed polls, and Grok's billing mapper treated an omitted
+(zero-value) `creditUsagePercent` as "unknown" instead of 0% right after a quota reset.
 
 ### Phase 5 — Future
 

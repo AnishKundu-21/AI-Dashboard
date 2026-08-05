@@ -219,9 +219,9 @@ export function getOverview(
     )
     .all({ sinceIso, provider }) as ProviderCost[]
 
-  const quotas = getLatestQuotas(db).filter(
-    (q) => provider === 'all' || q.provider === provider
-  )
+  const quotas = getLatestQuotas(db)
+    .filter((q) => provider === 'all' || q.provider === provider)
+    .map(applyClaudeBurnWindow)
   const usedValues = quotas
     .map((q) => q.used_pct)
     .filter((v): v is number => typeof v === 'number')
@@ -457,20 +457,56 @@ export function getModelMix(
   }))
 }
 
+// Claude's primary used_pct tracks the 5h session window, which resets multiple
+// times a day and is useless for a burn-rate trend. Burn rate instead follows
+// the weekly (seven_day) window, carried per-snapshot inside raw_summary_json.
+const CLAUDE_BURN_WINDOW_LABEL = 'Weekly (all models)'
+
+// Exported so every burn-rate consumer (chart, projection cards, alerts) reads
+// the same window instead of each re-deriving — and drifting — independently.
+export function applyClaudeBurnWindow(q: QuotaSnapshot): QuotaSnapshot {
+  if (q.provider !== 'claude') return q
+  const weekly = q.windows?.find((w) => w.label === CLAUDE_BURN_WINDOW_LABEL)
+  if (!weekly) return q
+  return {
+    ...q,
+    used_pct: weekly.used_pct,
+    remaining_pct: weekly.remaining_pct,
+    reset_at: weekly.reset_at,
+    window_label: CLAUDE_BURN_WINDOW_LABEL
+  }
+}
+
+function claudeBurnSnapshot(q: QuotaSnapshot | undefined): QuotaSnapshot | undefined {
+  return q ? applyClaudeBurnWindow(q) : q
+}
+
+function claudeWeeklyUsedPctFromRaw(raw: string | null): number | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as { windows?: QuotaSnapshot['windows'] }
+    const weekly = parsed.windows?.find((w) => w.label === CLAUDE_BURN_WINDOW_LABEL)
+    return weekly?.used_pct ?? null
+  } catch {
+    return null
+  }
+}
+
 export function getBurn(
   db: Database.Database,
   provider: ProviderId,
   rangeDays: RangeDays
 ): BurnPoint[] {
   const quotas = getLatestQuotas(db)
-  const latest = quotas.find((x) => x.provider === provider)
+  const rawLatest = quotas.find((x) => x.provider === provider)
+  const latest = provider === 'claude' ? claudeBurnSnapshot(rawLatest) : rawLatest
 
   const sinceIso = rangeStart(rangeDays, getSettings(db).timezone)?.toISOString() ?? null
 
   const rows = db
     .prepare(
       `
-    SELECT captured_at, used_pct
+    SELECT captured_at, used_pct, raw_summary_json
     FROM quota_snapshots
     WHERE provider = @provider
       AND used_pct IS NOT NULL
@@ -478,13 +514,18 @@ export function getBurn(
     ORDER BY captured_at ASC
   `
     )
-    .all({ provider, sinceIso }) as Array<{ captured_at: string; used_pct: number }>
+    .all({ provider, sinceIso }) as Array<{
+    captured_at: string
+    used_pct: number
+    raw_summary_json: string | null
+  }>
 
-  const history = rows.map((r) => ({
-    day: r.captured_at.slice(0, 10),
-    used_pct: r.used_pct,
-    captured_at: r.captured_at
-  }))
+  const history: Array<{ day: string; used_pct: number; captured_at: string }> = []
+  for (const r of rows) {
+    const used = provider === 'claude' ? claudeWeeklyUsedPctFromRaw(r.raw_summary_json) : r.used_pct
+    if (used == null) continue
+    history.push({ day: r.captured_at.slice(0, 10), used_pct: used, captured_at: r.captured_at })
+  }
 
   const effectiveDays =
     rangeDays === 0
@@ -494,7 +535,7 @@ export function getBurn(
 }
 
 export function getProjections(db: Database.Database): ProjectionCard[] {
-  const quotas = getLatestQuotas(db)
+  const quotas = getLatestQuotas(db).map(applyClaudeBurnWindow)
   const since = new Date()
   since.setDate(since.getDate() - 7)
   const sinceDay = since.toISOString().slice(0, 10)
