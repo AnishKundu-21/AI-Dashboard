@@ -148,3 +148,39 @@ describe('parseClaudeLine', () => {
     ).toHaveLength(0)
   })
 })
+
+describe('non-model records', () => {
+  it('ignores Claude Code synthetic placeholders', () => {
+    // A rate-limit notice the CLI composed itself: real in the transcript,
+    // but not a model call, and with no rate of its own it would otherwise
+    // mark a fully priced session as unpriced.
+    const events = eventsFrom([
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 's1',
+        timestamp: '2026-07-01T10:00:00Z',
+        requestId: 'req-1',
+        message: {
+          id: 'msg-synth',
+          model: '<synthetic>',
+          content: [{ text: "You've hit your session limit" }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0
+          }
+        }
+      })
+    ])
+    expect(events).toHaveLength(0)
+  })
+
+  it('ignores an assistant record that reported no tokens', () => {
+    expect(
+      eventsFrom([
+        assistantLine({ usage: { input_tokens: 0, output_tokens: 0 } })
+      ])
+    ).toHaveLength(0)
+  })
+})

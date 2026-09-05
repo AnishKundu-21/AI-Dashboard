@@ -13,6 +13,9 @@ import type { UsageEvent } from '../../../shared/types'
 
 export const CLAUDE_SOURCE = 'claude:projects-jsonl'
 
+/** Claude Code's placeholder for a message it composed itself, not a model call. */
+export const SYNTHETIC_MODEL = '<synthetic>'
+
 /** Cheap gate applied before `JSON.parse`; most transcript lines are tool output. */
 export function mightCarryClaudeUsage(line: string): boolean {
   return line.includes('"usage"')
@@ -83,7 +86,11 @@ export function parseClaudeLine(
   }
 
   const model = stringOrNull(message.model)
-  if (!model) {
+  // `<synthetic>` marks a message Claude Code composed locally — a rate-limit
+  // notice, an interrupted turn — not a model call. Its usage is all zeros, so
+  // counting it would add a phantom model call and, because the placeholder
+  // has no rate, flag an otherwise fully priced session as unpriced.
+  if (!model || model === SYNTHETIC_MODEL) {
     return { ...EMPTY, cwd, session_id: sessionId, timestamp_ms: timestampMs }
   }
 
@@ -95,6 +102,16 @@ export function parseClaudeLine(
     // Anthropic folds thinking tokens into output_tokens and does not break
     // them out, so claiming a reasoning split here would be invention.
     reasoning: 0
+  }
+
+  // A record with no tokens carries no usage — matching the Codex and Grok
+  // parsers, which already drop these.
+  if (
+    tokens.uncached_input + tokens.cached_input + tokens.cache_creation +
+      tokens.output ===
+    0
+  ) {
+    return { ...EMPTY, cwd, session_id: sessionId, timestamp_ms: timestampMs }
   }
 
   const messageId = stringOrNull(message.id)

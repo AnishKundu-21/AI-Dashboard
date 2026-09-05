@@ -14,6 +14,7 @@
     "dist:signed": "npm run build && electron-builder --win",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
+    "verify:real": "vitest run --config vitest.verify.config.ts --reporter=verbose",
     "test:watch": "vitest",
     "rebuild:native": "electron-builder install-app-deps",
     "postinstall": "electron-builder install-app-deps || echo Skip native rebuild (run npm run rebuild:native)"
