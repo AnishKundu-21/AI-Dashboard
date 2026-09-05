@@ -1,6 +1,6 @@
 # Local AI Usage Dashboard
 
-**Standalone Electron app** that shows where your coding-agent allowance goes — and how much is left — for **Grok Build**, **Codex CLI**, and **Claude Code**.
+**Standalone Electron app** that shows where your coding-agent allowance goes — and how much is left — across **Grok Build**, **Codex CLI**, **Claude Code**, **Cursor CLI**, and **OpenCode**.
 
 Local-first · metadata-only · no prompt storage · Windows first
 
@@ -40,13 +40,15 @@ Read **[`PLAN.md`](./PLAN.md)** for full architecture, phases, IPC, schema, risk
 
 ## What you get (product)
 
-### Providers (v1)
+### Providers
 
 | Provider | Plan shown | Live quota source (when connected) |
 |----------|------------|-------------------------------------|
 | **Grok Build** | **Per user** (detect + optional Settings) | Local `~/.grok/auth.json` → xAI CLI billing API |
 | **Codex CLI** | **Per user** (e.g. API `plan_type`: plus/pro/…) | Local `~/.codex/auth.json` → ChatGPT `wham/usage` API |
 | **Claude Code** | **Per user** (Free / Pro / Max / … — never assumed) | Local Claude credentials → usage API when available |
+| **Cursor CLI** | Quota unavailable; local usage only | `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` |
+| **OpenCode** | Quota unavailable; local usage/cost only | Local OpenCode SQLite store |
 
 **Plan resolution:** auto-detect from API/auth → optional user override in Settings → otherwise `Unknown`. See [`PLAN.md` §4](./PLAN.md#4-locked-product-decisions).
 
@@ -70,18 +72,18 @@ Read **[`PLAN.md`](./PLAN.md)** for full architecture, phases, IPC, schema, risk
 - Multi-machine sync
 - Mobile app
 - Hosted update feed and production signing certificate provisioning (the app-side hooks are implemented)
-- Extra providers beyond the three above
+- Additional provider-specific subscription quota transports
 
 ---
 
 ## How it works (simple)
 
 ```text
-You already logged into Grok Build / Codex / Claude Code
+You already use one or more supported coding agents
                     │
                     ▼
-         Auth files on your PC
-         (e.g. .grok\auth.json)
+         Local auth and usage stores
+         (tokens stay in the main process)
                     │
         ┌───────────┴───────────┐
         ▼                       ▼

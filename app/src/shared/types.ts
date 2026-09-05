@@ -85,6 +85,8 @@ export const AppSettingsSchema = z.object({
   notify_enabled: z.boolean().default(true),
   network_quota_refresh: z.boolean().default(true),
   retention_days: z.number().int().positive().default(90),
+  /** Missing entries are enabled; explicit false disables collection and display. */
+  enabled_providers: z.record(ProviderIdSchema, z.boolean()).default({}),
   /** Per-model price overrides, keyed by the exact provider model id. */
   price_overrides: z.record(z.string(), ModelPriceOverrideSchema).default({}),
   plans: z
@@ -92,7 +94,9 @@ export const AppSettingsSchema = z.object({
     .default({
       grok: { mode: 'auto', source: 'unknown' },
       claude: { mode: 'auto', source: 'unknown' },
-      codex: { mode: 'auto', source: 'unknown' }
+      codex: { mode: 'auto', source: 'unknown' },
+      cursor: { mode: 'auto', source: 'unknown' },
+      opencode: { mode: 'auto', source: 'unknown' }
     })
 })
 export type AppSettings = z.infer<typeof AppSettingsSchema>
@@ -255,7 +259,16 @@ export type CollectorHealth = z.infer<typeof CollectorHealthSchema>
 export const ProviderCostSchema = z.object({
   provider: ProviderIdSchema,
   tokens_total: z.number(),
+  uncached_input: z.number(),
+  cached_input: z.number(),
+  cache_creation: z.number(),
+  output: z.number(),
+  reasoning: z.number(),
+  model_calls: z.number(),
   api_equiv_usd: z.number(),
+  provider_cost_usd: z.number(),
+  cache_savings_usd: z.number(),
+  unpriced_calls: z.number(),
   session_count: z.number()
 })
 export type ProviderCost = z.infer<typeof ProviderCostSchema>
@@ -268,9 +281,10 @@ export const OverviewMetricsSchema = z.object({
   range_days: RangeDaysSchema,
   avg_daily_tokens: z.number(),
   token_breakdown: z.object({
-    input: z.number(),
+    uncached_input: z.number(),
+    cached_input: z.number(),
+    cache_creation: z.number(),
     output: z.number(),
-    cached: z.number(),
     reasoning: z.number(),
     model_calls: z.number()
   }),
@@ -288,8 +302,17 @@ export const DailyUsagePointSchema = z.object({
   day: z.string(),
   provider: ProviderIdSchema,
   tokens_total: z.number(),
+  uncached_input: z.number(),
+  cached_input: z.number(),
+  cache_creation: z.number(),
+  output: z.number(),
+  reasoning: z.number(),
+  model_calls: z.number(),
   session_count: z.number(),
-  api_equiv_usd: z.number()
+  api_equiv_usd: z.number(),
+  provider_cost_usd: z.number(),
+  cache_savings_usd: z.number(),
+  unpriced_calls: z.number()
 })
 export type DailyUsagePoint = z.infer<typeof DailyUsagePointSchema>
 
@@ -297,6 +320,17 @@ export const ModelMixItemSchema = z.object({
   model: z.string(),
   provider: ProviderIdSchema,
   tokens_total: z.number(),
+  uncached_input: z.number(),
+  cached_input: z.number(),
+  cache_creation: z.number(),
+  output: z.number(),
+  reasoning: z.number(),
+  model_calls: z.number(),
+  session_count: z.number(),
+  api_equiv_usd: z.number(),
+  provider_cost_usd: z.number(),
+  cache_savings_usd: z.number(),
+  unpriced_calls: z.number(),
   share: z.number()
 })
 export type ModelMixItem = z.infer<typeof ModelMixItemSchema>
@@ -337,6 +371,14 @@ export const BurnPointSchema = z.object({
   projected: z.boolean()
 })
 export type BurnPoint = z.infer<typeof BurnPointSchema>
+
+export const BurnSeriesSchema = z.object({
+  id: z.string(),
+  provider: ProviderIdSchema,
+  label: z.string(),
+  points: z.array(BurnPointSchema)
+})
+export type BurnSeries = z.infer<typeof BurnSeriesSchema>
 
 export const ProjectionCardSchema = z.object({
   provider: ProviderIdSchema,

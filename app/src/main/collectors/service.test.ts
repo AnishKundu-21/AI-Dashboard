@@ -18,4 +18,20 @@ describe('real-time provider file classification', () => {
       classifyProviderChange('codex', 'sessions\\2026\\rollout.jsonl')
     ).toBe('session')
   })
+
+  it('detects Cursor agent transcripts', () => {
+    expect(
+      classifyProviderChange(
+        'cursor',
+        'projects\\encoded-workspace\\agent-transcripts\\abc\\abc.jsonl'
+      )
+    ).toBe('session')
+    expect(classifyProviderChange('cursor', 'projects\\cache.json')).toBe('ignore')
+  })
+
+  it('detects OpenCode database changes', () => {
+    expect(classifyProviderChange('opencode', 'opencode.db')).toBe('session')
+    expect(classifyProviderChange('opencode', 'opencode.db-wal')).toBe('session')
+    expect(classifyProviderChange('opencode', 'other.db')).toBe('ignore')
+  })
 })

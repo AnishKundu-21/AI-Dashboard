@@ -9,6 +9,7 @@ const settings: AppSettings = {
   notify_enabled: true,
   network_quota_refresh: true,
   retention_days: 90,
+  enabled_providers: {},
   price_overrides: {},
   plans: {
     grok: { mode: 'auto', source: 'unknown' },

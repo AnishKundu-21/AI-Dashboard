@@ -4,6 +4,7 @@ import {
   AlertsDismissInput,
   ExportInput,
   GetBurnInput,
+  GetBurnSeriesInput,
   GetOverviewInput,
   GetSessionsInput,
   IPC,
@@ -16,6 +17,7 @@ import {
   exportAsCsv,
   exportAsJson,
   getBurn,
+  getBurnSeries,
   getCollectorHealth,
   getDailyUsage,
   getLatestQuotas,
@@ -27,7 +29,11 @@ import {
   listAlerts,
   setSettings
 } from '../db/queries'
-import { collectProviderSessions, refreshEverything } from '../collectors/service'
+import {
+  collectProviderSessions,
+  refreshEverything,
+  startRealtimeWatchers
+} from '../collectors/service'
 import {
   rebuildAllDays,
   refreshSessionRollups,
@@ -52,6 +58,11 @@ export function registerIpcHandlers(): void {
   secureHandle(IPC.getBurn, (_e, raw) => {
     const input = GetBurnInput.parse(raw)
     return getBurn(getDb(), input.provider, input.range_days)
+  })
+
+  secureHandle(IPC.getBurnSeries, (_e, raw) => {
+    const input = GetBurnSeriesInput.parse(raw ?? {})
+    return getBurnSeries(getDb(), input.provider, input.range_days)
   })
 
   secureHandle(IPC.getModelMix, (_e, raw) => {
@@ -137,6 +148,12 @@ export function registerIpcHandlers(): void {
     }
 
     applyRetention(db, next.retention_days)
+    if (input.enabled_providers !== undefined) {
+      startRealtimeWatchers()
+      // Enabling a provider should populate it immediately; disabling one is
+      // also respected by this refresh, so no further requests reach it.
+      void refreshEverything()
+    }
     broadcastChanged()
     return next
   })

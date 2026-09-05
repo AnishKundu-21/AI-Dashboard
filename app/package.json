@@ -1,7 +1,7 @@
 {
   "name": "ai-usage-dashboard",
   "version": "0.1.0",
-  "description": "Local AI Usage Dashboard — Grok Build, Claude Code, Codex CLI",
+  "description": "Local AI Usage Dashboard for Grok, Claude, Codex, Cursor, and OpenCode",
   "main": "./out/main/index.js",
   "author": "AI Dashboard",
   "license": "UNLICENSED",

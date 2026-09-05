@@ -1,6 +1,24 @@
+import { DatabaseSync } from 'node:sqlite'
+import type Database from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
-import { applyClaudeBurnWindow } from './queries'
+import {
+  applyBurnWindow,
+  applyClaudeBurnWindow,
+  getBurn,
+  getBurnSeries,
+  getDailyUsage,
+  getOverview,
+  getProjections,
+  getLatestQuotas,
+  getCollectorHealth,
+  getModelMix,
+  getSessions,
+  getSettings,
+  setSettings
+} from './queries'
+import { insertQuotaSnapshot } from './upsert'
 import type { QuotaSnapshot } from '../../shared/types'
+import { MIGRATIONS } from './schema'
 
 const claudeLive: QuotaSnapshot = {
   provider: 'claude',
@@ -44,5 +62,264 @@ describe('applyClaudeBurnWindow', () => {
   it('is a no-op for non-Claude providers', () => {
     const grok: QuotaSnapshot = { ...claudeLive, provider: 'grok' }
     expect(applyClaudeBurnWindow(grok)).toEqual(grok)
+  })
+
+  it('uses Codex weekly quota instead of the five-hour session limit', () => {
+    const codex: QuotaSnapshot = {
+      ...claudeLive,
+      provider: 'codex',
+      used_pct: 73,
+      remaining_pct: 27,
+      window_label: 'Session',
+      quota_windows: [
+        {
+          id: 'primary',
+          kind: 'session',
+          label: 'Session',
+          used_pct: 73,
+          resets_at: '2026-09-05T15:15:23.000Z',
+          window_duration_mins: 300
+        },
+        {
+          id: 'secondary',
+          kind: 'weekly',
+          label: 'Weekly',
+          used_pct: 4,
+          resets_at: '2026-09-11T15:50:29.000Z',
+          window_duration_mins: 10080
+        }
+      ]
+    }
+    expect(applyBurnWindow(codex)).toMatchObject({
+      used_pct: 4,
+      remaining_pct: 96,
+      reset_at: '2026-09-11T15:50:29.000Z',
+      window_label: 'Weekly'
+    })
+  })
+})
+
+describe('provider enablement', () => {
+  it('merges sparse changes and excludes disabled providers from all-provider totals', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+
+    setSettings(db, { enabled_providers: { claude: false } })
+    setSettings(db, { enabled_providers: { opencode: false } })
+    expect(getSettings(db).enabled_providers).toEqual({
+      claude: false,
+      opencode: false
+    })
+
+    const insert = raw.prepare(`
+      INSERT INTO usage_events (
+        dedupe_key, provider, session_id, project, model, ts_ms,
+        uncached_input, cached_input, cache_creation, output, reasoning,
+        cost_usd, cache_savings_usd, reported_cost_usd, source
+      ) VALUES (?, ?, ?, '', 'test-model', ?, ?, 0, 0, 0, 0, 0, 0, NULL, 'test')
+    `)
+    insert.run('grok:event', 'grok', 'grok-session', Date.now(), 100)
+    insert.run('claude:event', 'claude', 'claude-session', Date.now(), 200)
+
+    const overview = getOverview(db, 'all', 0)
+    expect(overview.tokens_total).toBe(100)
+    expect(overview.by_provider.map((row) => row.provider)).toEqual(['grok'])
+    expect(getOverview(db, 'claude', 0).tokens_total).toBe(0)
+    expect(getCollectorHealth(db).map((row) => row.provider)).toEqual([
+      'grok',
+      'codex',
+      'cursor'
+    ])
+    raw.close()
+  })
+})
+
+describe('usage analytics detail', () => {
+  it('preserves every token class and cost signal by day, provider, and model', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+    const insert = raw.prepare(`
+      INSERT INTO usage_events (
+        dedupe_key, provider, session_id, project, model, ts_ms,
+        uncached_input, cached_input, cache_creation, output, reasoning,
+        cost_usd, cache_savings_usd, reported_cost_usd, source
+      ) VALUES (?, ?, ?, 'project', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'test')
+    `)
+    const now = Date.now()
+    insert.run('claude:1', 'claude', 'session-1', 'claude-sonnet-4-5', now, 100, 200, 30, 40, 10, 0.5, 0.2, 0.4)
+    insert.run('claude:2', 'claude', 'session-1', 'claude-sonnet-4-5', now + 1, 10, 20, 3, 4, 1, null, 0.02, null)
+
+    const overview = getOverview(db, 'claude', 0)
+    expect(overview.token_breakdown).toEqual({
+      uncached_input: 110,
+      cached_input: 220,
+      cache_creation: 33,
+      output: 44,
+      reasoning: 11,
+      model_calls: 2
+    })
+    expect(overview.by_provider[0]).toMatchObject({
+      provider: 'claude',
+      tokens_total: 407,
+      cached_input: 220,
+      cache_creation: 33,
+      provider_cost_usd: 0.4,
+      cache_savings_usd: 0.22,
+      unpriced_calls: 1,
+      session_count: 1
+    })
+
+    const daily = getDailyUsage(db, 'claude', 0)
+    expect(daily).toHaveLength(1)
+    expect(daily[0]).toMatchObject({
+      tokens_total: 407,
+      uncached_input: 110,
+      cached_input: 220,
+      cache_creation: 33,
+      output: 44,
+      reasoning: 11,
+      model_calls: 2,
+      session_count: 1,
+      api_equiv_usd: 0.5,
+      provider_cost_usd: 0.4,
+      cache_savings_usd: 0.22,
+      unpriced_calls: 1
+    })
+
+    const models = getModelMix(db, 'claude', 0)
+    expect(models).toHaveLength(1)
+    expect(models[0]).toMatchObject({
+      provider: 'claude',
+      tokens_total: 407,
+      cached_input: 220,
+      cache_creation: 33,
+      model_calls: 2,
+      session_count: 1,
+      api_equiv_usd: 0.5,
+      provider_cost_usd: 0.4,
+      cache_savings_usd: 0.22,
+      unpriced_calls: 1,
+      share: 1
+    })
+
+    raw.prepare(`
+      INSERT INTO sessions (
+        id, provider, project, model, tokens_total, status,
+        started_at, source, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'complete', ?, 'test', ?)
+    `).run(
+      'session-1',
+      'claude',
+      'project',
+      'anthropic/claude-sonnet-4-5',
+      407,
+      new Date(now).toISOString(),
+      new Date(now).toISOString()
+    )
+    expect(
+      getSessions(db, 'claude', 0, undefined, { model: 'claude-sonnet-4-5' })
+    ).toHaveLength(1)
+    raw.close()
+  })
+})
+
+describe('quota snapshot detail persistence', () => {
+  it('round-trips normalized windows and quota diagnostics', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+    const snapshot: QuotaSnapshot = {
+      ...claudeLive,
+      quota_windows: [
+        {
+          id: 'five_hour',
+          kind: 'session',
+          label: 'Session (5h)',
+          used_pct: 8,
+          resets_at: '2026-08-04T21:50:00.000Z',
+          window_duration_mins: 300
+        }
+      ],
+      transport: 'http',
+      unavailable: undefined
+    }
+    insertQuotaSnapshot(db, snapshot)
+    const restored = getLatestQuotas(db).find((row) => row.provider === 'claude')
+    expect(restored?.quota_windows).toEqual(snapshot.quota_windows)
+    expect(restored?.transport).toBe('http')
+    raw.close()
+  })
+
+  it('uses the stored Codex weekly window for history and runway cards', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+    const capturedAt = new Date().toISOString()
+    insertQuotaSnapshot(db, {
+      ...claudeLive,
+      provider: 'codex',
+      captured_at: capturedAt,
+      used_pct: 73,
+      remaining_pct: 27,
+      reset_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+      window_label: 'Session',
+      quota_windows: [
+        {
+          id: 'primary',
+          kind: 'session',
+          label: 'Session',
+          used_pct: 73,
+          resets_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+          window_duration_mins: 300
+        },
+        {
+          id: 'secondary',
+          kind: 'weekly',
+          label: 'Weekly',
+          used_pct: 4,
+          resets_at: new Date(Date.now() + 6 * 86_400_000).toISOString(),
+          window_duration_mins: 10080
+        }
+      ]
+    })
+
+    const observed = getBurn(db, 'codex', 7).filter((point) => !point.projected)
+    expect(observed.at(-1)?.used_pct).toBe(4)
+    expect(getProjections(db).find((card) => card.provider === 'codex')?.detail).toMatch(
+      /96% remaining.*Weekly/
+    )
+    const codexSeries = getBurnSeries(db, 'codex', 7)
+    expect(codexSeries).toHaveLength(1)
+    expect(codexSeries[0]).toMatchObject({ provider: 'codex', label: 'Codex CLI' })
+    expect(codexSeries[0].points[0]).toMatchObject({ used_pct: 4, projected: false })
+    raw.close()
+  })
+
+  it('returns every Claude weekly model window for a combined burn graph', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+    insertQuotaSnapshot(db, {
+      ...claudeLive,
+      quota_windows: [
+        { id: 'seven_day', kind: 'weekly', label: 'Weekly (all models)', used_pct: 40, resets_at: new Date(Date.now() + 4 * 86_400_000).toISOString(), window_duration_mins: 10080 },
+        { id: 'seven_day_opus', kind: 'weekly', label: 'Weekly (Opus)', used_pct: 20, resets_at: new Date(Date.now() + 4 * 86_400_000).toISOString(), window_duration_mins: 10080 },
+        { id: 'seven_day_sonnet', kind: 'weekly', label: 'Weekly (Sonnet)', used_pct: 60, resets_at: new Date(Date.now() + 4 * 86_400_000).toISOString(), window_duration_mins: 10080 }
+      ]
+    })
+
+    expect(getBurnSeries(db, 'claude', 7).map((series) => series.label)).toEqual([
+      'Claude · All models',
+      'Claude · Opus',
+      'Claude · Sonnet'
+    ])
+    raw.close()
   })
 })

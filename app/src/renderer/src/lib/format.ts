@@ -75,6 +75,40 @@ export function relativeTime(iso: string | null | undefined, now = Date.now()): 
   return day < 30 ? `${day}d ago` : new Date(t).toLocaleDateString()
 }
 
+/** Exact local reset time plus a future/past countdown, e.g. "in 2h 14m · Sep 5, 8:45 PM". */
+export function formatResetAt(
+  iso: string | null | undefined,
+  locale = 'en-US',
+  timezone = 'system',
+  now = Date.now()
+): string {
+  if (!iso) return '—'
+  const reset = new Date(iso)
+  const resetMs = reset.getTime()
+  if (Number.isNaN(resetMs)) return '—'
+  const diffMins = Math.round(Math.abs(resetMs - now) / 60_000)
+  const days = Math.floor(diffMins / (24 * 60))
+  const hours = Math.floor((diffMins % (24 * 60)) / 60)
+  const mins = diffMins % 60
+  const chunks = [days ? `${days}d` : '', hours ? `${hours}h` : '', `${mins}m`]
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(' ')
+  const relative = resetMs >= now ? `in ${chunks}` : `${chunks} ago`
+  try {
+    const absolute = new Intl.DateTimeFormat(locale, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      ...(timezone === 'system' ? {} : { timeZone: timezone })
+    }).format(reset)
+    return `${relative} · ${absolute}`
+  } catch {
+    return `${relative} · ${reset.toLocaleString()}`
+  }
+}
+
 /** Percentage change between two windows; null when there is no usable baseline. */
 export function pctDelta(current: number, previous: number): number | null {
   if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return null

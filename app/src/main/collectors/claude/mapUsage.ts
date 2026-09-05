@@ -1,4 +1,4 @@
-import type { AppSettings, QuotaSnapshot } from '../../../shared/types'
+import type { AppSettings, QuotaSnapshot, UsageWindow as NormalizedWindow } from '../../../shared/types'
 import { resolvePlan } from '../plan'
 
 interface UsageWindow {
@@ -32,22 +32,27 @@ export function mapClaudeUsage(
     'auth'
   )
 
-  const windows = [
-    toWindow('Session (5h)', fiveHour),
-    toWindow('Weekly (all models)', sevenDay),
-    toWindow('Weekly (Opus)', sevenDayOpus),
-    toWindow('Weekly (Sonnet)', sevenDaySonnet)
+  const quotaWindows = [
+    toUsageWindow('five_hour', 'session', 'Session (5h)', 5 * 60, fiveHour),
+    toUsageWindow('seven_day', 'weekly', 'Weekly (all models)', 7 * 24 * 60, sevenDay),
+    toUsageWindow('seven_day_opus', 'weekly', 'Weekly (Opus)', 7 * 24 * 60, sevenDayOpus),
+    toUsageWindow('seven_day_sonnet', 'weekly', 'Weekly (Sonnet)', 7 * 24 * 60, sevenDaySonnet)
   ].filter(
-    (window): window is NonNullable<QuotaSnapshot['windows']>[number] =>
-      window != null
+    (window): window is NormalizedWindow => window != null
   )
+  const windows = quotaWindows.map((window) => ({
+    label: window.label,
+    used_pct: window.used_pct,
+    remaining_pct: window.used_pct == null ? null : clampPct(100 - window.used_pct),
+    reset_at: window.resets_at
+  }))
 
   return {
     provider: 'claude',
     captured_at: opts.capturedAt ?? new Date().toISOString(),
     used_pct: used != null ? clampPct(used) : null,
     remaining_pct: used != null ? clampPct(100 - used) : null,
-    reset_at: fiveHour?.resets_at ?? null,
+    reset_at: normalizeReset(fiveHour?.resets_at),
     window_label: 'Session (5h)',
     plan_label: plan.plan_label,
     plan_source: plan.plan_source,
@@ -57,7 +62,9 @@ export function mapClaudeUsage(
     stale: false,
     live_captured_at:
       used != null ? (opts.capturedAt ?? new Date().toISOString()) : null,
-    windows: windows.length ? windows : undefined
+    windows: windows.length ? windows : undefined,
+    quota_windows: quotaWindows.length ? quotaWindows : undefined,
+    transport: 'http'
   }
 }
 
@@ -73,18 +80,29 @@ function asWindow(v: unknown): UsageWindow | null {
   return { utilization, resets_at }
 }
 
-function toWindow(
+function toUsageWindow(
+  id: string,
+  kind: NormalizedWindow['kind'],
   label: string,
+  durationMins: number,
   window: UsageWindow | null
-): NonNullable<QuotaSnapshot['windows']>[number] | null {
+): NormalizedWindow | null {
   if (!window) return null
   const used = window.utilization
   return {
+    id,
+    kind,
     label,
     used_pct: used != null ? clampPct(used) : null,
-    remaining_pct: used != null ? clampPct(100 - used) : null,
-    reset_at: window.resets_at
+    resets_at: normalizeReset(window.resets_at),
+    window_duration_mins: durationMins
   }
+}
+
+function normalizeReset(value: string | null | undefined): string | null {
+  if (!value) return null
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString()
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {

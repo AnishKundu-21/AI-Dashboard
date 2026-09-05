@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AlertRow,
   AppSettings,
-  BurnPoint,
+  BurnSeries,
   CollectorHealth,
   DailyUsagePoint,
   ModelMixItem,
@@ -13,11 +13,20 @@ import type {
   RangeDays,
   SessionRow
 } from '@shared/types'
-import { providerMeta, providerIds } from '@shared/providers'
+import {
+  enabledProviderIds as getEnabledProviderIds,
+  providerMeta,
+  providerIds
+} from '@shared/providers'
 import { QuotaCard } from './components/QuotaCard'
 import { DailyChart, type DailyMetric } from './components/DailyChart'
 import { BurnChart } from './components/BurnChart'
-import { ModelDonut } from './components/ModelDonut'
+import {
+  ANALYTICS_METRICS,
+  AnalyticsRankChart,
+  AnalyticsTable,
+  type AnalyticsMetric
+} from './components/AnalyticsBreakdown'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SideNav, VIEWS, type ViewId } from './components/SideNav'
 import { TopBar, type ProviderTab } from './components/TopBar'
@@ -28,7 +37,6 @@ import { AlertStack } from './components/AlertStack'
 import { ProjectionCard } from './components/ProjectionCard'
 import { HealthCard } from './components/HealthCard'
 import { Toasts, type ToastItem } from './components/Toasts'
-import { Segmented } from './components/Segmented'
 import { IconClose, IconSearch, IconWarning } from './components/Icons'
 import {
   formatCurrency,
@@ -39,8 +47,6 @@ import {
 } from './lib/format'
 import { compact } from './lib/chart'
 import { useCollapsedNav, useNow, useTheme } from './lib/hooks'
-
-const EMPTY_BURN: Record<ProviderId, BurnPoint[]> = { grok: [], claude: [], codex: [] }
 
 export default function App() {
   // Shell -----------------------------------------------------------------
@@ -59,8 +65,9 @@ export default function App() {
   const [selectedModel, setSelectedModel] = useState<string | undefined>()
   const [sessionSort, setSessionSort] = useState<SessionSort>('started_at')
   const [sessionLimit, setSessionLimit] = useState(100)
-  const [burnProvider, setBurnProvider] = useState<ProviderId>('grok')
+  const [burnProvider, setBurnProvider] = useState<ProviderId | 'all'>('all')
   const [dailyMetric, setDailyMetric] = useState<DailyMetric>('tokens')
+  const [analyticsMetric, setAnalyticsMetric] = useState<AnalyticsMetric>('tokens_total')
 
   // Requests --------------------------------------------------------------
   const [loading, setLoading] = useState(true)
@@ -73,7 +80,7 @@ export default function App() {
   const [overview, setOverview] = useState<OverviewMetrics | null>(null)
   const [quotas, setQuotas] = useState<QuotaSnapshot[]>([])
   const [daily, setDaily] = useState<DailyUsagePoint[]>([])
-  const [burn, setBurn] = useState<Record<ProviderId, BurnPoint[]>>(EMPTY_BURN)
+  const [burnSeries, setBurnSeries] = useState<BurnSeries[]>([])
   const [models, setModels] = useState<ModelMixItem[]>([])
   const [sessions, setSessions] = useState<SessionRow[]>([])
   const [projections, setProjections] = useState<ProjectionCardData[]>([])
@@ -125,9 +132,7 @@ export default function App() {
         window.api.getOverview(base),
         window.api.getQuotas(),
         window.api.getDailyUsage(base),
-        Promise.all(
-          providerIds().map((id) => window.api.getBurn({ provider: id, range_days: rangeDays }))
-        ),
+        window.api.getBurnSeries({ provider: 'all', range_days: rangeDays }),
         window.api.getModelMix(base),
         window.api.getSessions({
           ...base,
@@ -149,7 +154,7 @@ export default function App() {
       setOverview(ov)
       setQuotas(q)
       setDaily(d)
-      setBurn({ grok: burnList[0] ?? [], claude: burnList[1] ?? [], codex: burnList[2] ?? [] })
+      setBurnSeries(burnList)
       setModels(m)
       setSessions(s)
       setProjections(p)
@@ -191,9 +196,31 @@ export default function App() {
 
   const currency = settings?.display_currency ?? 'USD'
   const locale = settings?.locale ?? 'en-US'
+  const enabledProviders = useMemo(
+    () => (settings ? getEnabledProviderIds(settings) : providerIds()),
+    [settings]
+  )
+  const quotaProviders = useMemo(
+    () => enabledProviders.filter((id) => providerMeta(id).reportsQuota),
+    [enabledProviders]
+  )
+
+  useEffect(() => {
+    if (provider !== 'all' && !enabledProviders.includes(provider)) {
+      setProvider('all')
+    }
+    if (burnProvider !== 'all' && !quotaProviders.includes(burnProvider) && quotaProviders[0]) {
+      setBurnProvider(quotaProviders[0])
+    }
+  }, [burnProvider, enabledProviders, provider, quotaProviders])
 
   const visibleQuotas = useMemo(
-    () => (provider === 'all' ? quotas : quotas.filter((q) => q.provider === provider)),
+    () =>
+      quotas.filter(
+        (q) =>
+          providerMeta(q.provider).reportsQuota &&
+          (provider === 'all' || q.provider === provider)
+      ),
     [quotas, provider]
   )
 
@@ -223,7 +250,12 @@ export default function App() {
   const deltaLabel = 'Later half vs earlier half of the selected range'
 
   const activeProjections = useMemo(
-    () => projections.filter((p) => provider === 'all' || p.provider === provider),
+    () =>
+      projections.filter(
+        (p) =>
+          providerMeta(p.provider).reportsQuota &&
+          (provider === 'all' || p.provider === provider)
+      ),
     [projections, provider]
   )
 
@@ -374,7 +406,7 @@ export default function App() {
         <div className="context-item" style={{ marginLeft: 'auto' }}>
           <span>Live quota</span>
           <div className="context-providers">
-            {providerIds().map((id) => {
+            {quotaProviders.map((id) => {
               const q = quotas.find((x) => x.provider === id)
               const live = q?.confidence === 'live' && !q.stale
               return (
@@ -453,11 +485,27 @@ export default function App() {
             </p>
           </div>
         </div>
-        <div className="grid grid-3">
-          {visibleQuotas.map((q) => (
-            <QuotaCard key={q.provider} quota={q} />
-          ))}
-        </div>
+        {visibleQuotas.length === 0 ? (
+          <div className="panel empty">
+            <strong>No subscription quota for this filter</strong>
+            <p>
+              {provider !== 'all' && !providerMeta(provider).reportsQuota
+                ? `${providerMeta(provider).name} contributes local usage and cost, but does not expose a quota window.`
+                : 'Enable a quota-capable provider in Settings to show remaining limits.'}
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-3">
+            {visibleQuotas.map((q) => (
+              <QuotaCard
+                key={q.provider}
+                quota={q}
+                locale={locale}
+                timezone={settings?.timezone ?? 'system'}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
       {overview && overview.by_provider.length > 0 ? (
@@ -493,86 +541,138 @@ export default function App() {
   const analyticsView = (
     <div className="view">
       {filterBar}
-      <div className="grid grid-charts">
+      {overview ? (
+        <div className="analytics-kpis">
+          <AnalyticsKpi label="Total tokens" value={formatTokens(overview.tokens_total)} />
+          <AnalyticsKpi label="Uncached input" value={formatTokens(overview.token_breakdown.uncached_input)} />
+          <AnalyticsKpi label="Cache reads" value={formatTokens(overview.token_breakdown.cached_input)} />
+          <AnalyticsKpi label="Cache writes" value={formatTokens(overview.token_breakdown.cache_creation)} />
+          <AnalyticsKpi label="Cache hit rate" value={formatCacheHitRate(overview.token_breakdown)} note="reads / reusable input" />
+          <AnalyticsKpi label="Output" value={formatTokens(overview.token_breakdown.output)} />
+          <AnalyticsKpi label="Reasoning" value={formatTokens(overview.token_breakdown.reasoning)} note="subset of output" />
+          <AnalyticsKpi label="Model calls" value={overview.token_breakdown.model_calls.toLocaleString(locale)} />
+          <AnalyticsKpi label="API-equivalent" value={formatCurrency(overview.api_equiv_usd, currency, locale)} />
+          <AnalyticsKpi label="Cache savings" value={formatCurrency(overview.cache_savings_usd, currency, locale)} />
+        </div>
+      ) : null}
+
+      <article className="panel">
+        <div className="card-head">
+          <div>
+            <h3>Usage over time by provider</h3>
+            <p>Event-grain, timezone-aware totals · click the chart to filter sessions to that day</p>
+          </div>
+          <select
+            className="select analytics-metric-select"
+            value={dailyMetric}
+            aria-label="Daily chart metric"
+            onChange={(e) => setDailyMetric(e.target.value as DailyMetric)}
+          >
+            <option value="tokens">Total tokens</option>
+            <option value="input">Uncached input</option>
+            <option value="cache-read">Cache reads</option>
+            <option value="cache-write">Cache writes</option>
+            <option value="output">Output tokens</option>
+            <option value="reasoning">Reasoning tokens</option>
+            <option value="calls">Model calls</option>
+            <option value="sessions">Sessions</option>
+            <option value="cost">API-equivalent cost</option>
+            <option value="provider-cost">Provider-reported cost</option>
+            <option value="savings">Cache savings</option>
+          </select>
+        </div>
+        <DailyChart
+          data={daily}
+          metric={dailyMetric}
+          currency={currency}
+          locale={locale}
+          selectedDay={selectedDay}
+          onSelectDay={(day) => setSelectedDay(day === selectedDay ? undefined : day)}
+        />
+      </article>
+
+      <section className="section analytics-breakdown-section">
+        <div className="section-head">
+          <div>
+            <h2>Provider and model comparison</h2>
+            <p>Switch the measure to compare every collected provider and model on the same basis.</p>
+          </div>
+          <select
+            className="select analytics-metric-select"
+            value={analyticsMetric}
+            aria-label="Provider and model comparison metric"
+            onChange={(e) => setAnalyticsMetric(e.target.value as AnalyticsMetric)}
+          >
+            {ANALYTICS_METRICS.map((metric) => (
+              <option key={metric.value} value={metric.value}>{metric.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="grid grid-charts">
+          <article className="panel">
+            <div className="card-head">
+              <div>
+                <h3>By provider</h3>
+                <p>All enabled providers in the selected window</p>
+              </div>
+            </div>
+            <div className="card-body">
+              <AnalyticsRankChart
+                rows={overview?.by_provider ?? []}
+                kind="provider"
+                metric={analyticsMetric}
+                currency={currency}
+                locale={locale}
+              />
+            </div>
+          </article>
+
+          <article className="panel">
+            <div className="card-head">
+              <div>
+                <h3>By model</h3>
+                <p>Every observed model for the selected measure</p>
+              </div>
+            </div>
+            <div className="card-body">
+              <AnalyticsRankChart
+                rows={models}
+                kind="model"
+                metric={analyticsMetric}
+                currency={currency}
+                locale={locale}
+                onSelectModel={(model) => setSelectedModel(model === selectedModel ? undefined : model)}
+              />
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <div className="grid analytics-detail-grid">
         <article className="panel">
           <div className="card-head">
             <div>
-              <h3>Daily usage</h3>
-              <p>Timezone-aware totals · click a bar to filter sessions to that day</p>
+              <h3>Provider detail</h3>
+              <p>Full token, call, cost, and cache accounting</p>
             </div>
-            <Segmented
-              ariaLabel="Daily chart metric"
-              value={dailyMetric}
-              onChange={setDailyMetric}
-              options={[
-                { value: 'tokens', label: 'Tokens' },
-                { value: 'cost', label: 'Cost' },
-                { value: 'sessions', label: 'Sessions' }
-              ]}
-            />
           </div>
-          <DailyChart
-            data={daily}
-            metric={dailyMetric}
+          <AnalyticsTable rows={overview?.by_provider ?? []} kind="provider" currency={currency} locale={locale} />
+        </article>
+
+        <article className="panel">
+          <div className="card-head">
+            <div>
+              <h3>Model detail</h3>
+              <p>Reasoning is a subset of output and is never double-counted in totals</p>
+            </div>
+          </div>
+          <AnalyticsTable
+            rows={models}
+            kind="model"
             currency={currency}
             locale={locale}
-            selectedDay={selectedDay}
-            onSelectDay={(day) => setSelectedDay(day === selectedDay ? undefined : day)}
+            onSelectModel={(model) => setSelectedModel(model === selectedModel ? undefined : model)}
           />
-        </article>
-
-        <article className="panel">
-          <div className="card-head">
-            <div>
-              <h3>Quota burn</h3>
-              <p>Observed snapshots with a dashed forecast</p>
-            </div>
-            <select
-              className="select"
-              value={burnProvider}
-              aria-label="Burn chart provider"
-              onChange={(e) => setBurnProvider(e.target.value as ProviderId)}
-            >
-              {providerIds().map((id) => (
-                <option key={id} value={id}>
-                  {providerMeta(id).name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <BurnChart data={burn[burnProvider]} provider={burnProvider} />
-        </article>
-      </div>
-
-      <div className="grid grid-mix">
-        <article className="panel">
-          <div className="card-head">
-            <div>
-              <h3>Model mix</h3>
-              <p>Share of observed token volume</p>
-            </div>
-          </div>
-          <div className="card-body">
-            <ModelDonut
-              models={models}
-              selectedModel={selectedModel}
-              onSelectModel={(model) =>
-                setSelectedModel(model === selectedModel ? undefined : model)
-              }
-            />
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="card-head">
-            <div>
-              <h3>Provider comparison</h3>
-              <p>Relative volume over {rangeLabel(rangeDays).toLowerCase()}</p>
-            </div>
-          </div>
-          <div className="card-body">
-            <Comparison overview={overview} currency={currency} locale={locale} />
-          </div>
         </article>
       </div>
 
@@ -668,7 +768,11 @@ export default function App() {
         {activeProjections.length === 0 ? (
           <div className="panel empty">
             <strong>No projections for this filter</strong>
-            <p>Switch to all providers, or connect a CLI to start collecting burn history.</p>
+            <p>
+              {provider !== 'all' && !providerMeta(provider).reportsQuota
+                ? `${providerMeta(provider).name} has local usage analytics, but no subscription-quota runway to forecast.`
+                : 'Switch to all providers, or connect a CLI to start collecting burn history.'}
+            </p>
           </div>
         ) : (
           <div className="grid grid-3">
@@ -686,23 +790,34 @@ export default function App() {
       <article className="panel">
         <div className="card-head">
           <div>
-            <h3>Burn detail</h3>
-            <p>Observed snapshots with a dashed forecast beyond the last measurement</p>
+            <h3>Weekly burn detail</h3>
+            <p>All-model weekly allowance snapshots with a dashed forecast beyond the last measurement</p>
           </div>
           <select
             className="select"
             value={burnProvider}
             aria-label="Burn chart provider"
-            onChange={(e) => setBurnProvider(e.target.value as ProviderId)}
+            onChange={(e) => setBurnProvider(e.target.value as ProviderId | 'all')}
           >
-            {providerIds().map((id) => (
-              <option key={id} value={id}>
-                {providerMeta(id).name}
-              </option>
-            ))}
+            {quotaProviders.length === 0 ? (
+              <option value={burnProvider}>No providers enabled</option>
+            ) : (
+              <>
+                <option value="all">All models</option>
+                {quotaProviders.map((id) => (
+                  <option key={id} value={id}>
+                    {providerMeta(id).name}
+                  </option>
+                ))}
+              </>
+            )}
           </select>
         </div>
-        <BurnChart data={burn[burnProvider]} provider={burnProvider} />
+        <BurnChart
+          series={burnSeries.filter(
+            (entry) => burnProvider === 'all' || entry.provider === burnProvider
+          )}
+        />
       </article>
 
       <Footer />
@@ -787,6 +902,7 @@ export default function App() {
         <TopBar
           title={meta.title}
           provider={provider}
+          providers={enabledProviders}
           onProvider={setProvider}
           rangeDays={rangeDays}
           onRange={setRangeDays}
@@ -810,9 +926,10 @@ export default function App() {
 
 function TokenSplit({ breakdown }: { breakdown: OverviewMetrics['token_breakdown'] }) {
   const parts = [
-    { key: 'input', label: 'in', value: breakdown.input, color: 'var(--grok)' },
+    { key: 'input', label: 'in', value: breakdown.uncached_input, color: 'var(--grok)' },
     { key: 'output', label: 'out', value: breakdown.output, color: 'var(--codex)' },
-    { key: 'cached', label: 'cached', value: breakdown.cached, color: 'var(--claude)' },
+    { key: 'cache-read', label: 'cache read', value: breakdown.cached_input, color: 'var(--claude)' },
+    { key: 'cache-write', label: 'cache write', value: breakdown.cache_creation, color: 'var(--cursor)' },
     { key: 'reasoning', label: 'reasoning', value: breakdown.reasoning, color: 'var(--border-2)' }
   ].filter((p) => p.value > 0)
 
@@ -843,6 +960,23 @@ function TokenSplit({ breakdown }: { breakdown: OverviewMetrics['token_breakdown
       </div>
     </>
   )
+}
+
+function AnalyticsKpi({ label, value, note }: { label: string; value: string; note?: string }) {
+  return (
+    <article className="analytics-kpi">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {note ? <small>{note}</small> : null}
+    </article>
+  )
+}
+
+function formatCacheHitRate(breakdown: OverviewMetrics['token_breakdown']): string {
+  const reusableInput = breakdown.uncached_input + breakdown.cached_input
+  return reusableInput > 0
+    ? `${((breakdown.cached_input / reusableInput) * 100).toFixed(1)}%`
+    : '—'
 }
 
 /** Per-provider used-% meters, so the average has context. */

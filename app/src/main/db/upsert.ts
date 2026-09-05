@@ -9,6 +9,10 @@ export function insertQuotaSnapshot(
   const summary = redactDeep({
     products: snap.products ?? null,
     windows: snap.windows ?? null,
+    quota_windows: snap.quota_windows ?? null,
+    unavailable: snap.unavailable ?? null,
+    transport: snap.transport ?? null,
+    reset_credits: snap.reset_credits ?? null,
     remaining_text: snap.remaining_text ?? null,
     plan_label: snap.plan_label,
     plan_source: snap.plan_source,

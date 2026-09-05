@@ -24,7 +24,6 @@
     "src/main/**/*",
     "src/preload/**/*",
     "src/shared/**/*",
-    "vitest.config.ts",
-    "src/**/*.test.ts"
+    "vitest.config.ts"
   ]
 }

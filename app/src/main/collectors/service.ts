@@ -14,11 +14,17 @@ import { IPC } from '../../shared/ipc'
 import type { QuotaSnapshot } from '../../shared/types'
 import type { AdapterContext } from './base'
 import { getAdapter, listAdapters, registerDefaultAdapters } from './registry'
-import { getClaudeHome, getCodexHome, getGrokHome } from '../util/paths'
+import {
+  getClaudeHome,
+  getCodexHome,
+  getCursorHome,
+  getGrokHome,
+  getOpenCodeHome
+} from '../util/paths'
 import { ensureRates, setPriceOverrides } from '../pricing/store'
 import { ensureFxRates } from '../pricing/fx'
 import { flushScanCache } from './cache'
-import type { ProviderId } from '../../shared/providers'
+import { isProviderEnabled, type ProviderId } from '../../shared/providers'
 
 let registered = false
 let pollTimer: NodeJS.Timeout | null = null
@@ -77,6 +83,7 @@ export async function refreshAllQuotas(): Promise<QuotaSnapshot[]> {
     )
 
     for (const adapter of listAdapters()) {
+      if (!isProviderEnabled(settings, adapter.id)) continue
       const minInterval = NETWORK_QUOTA_MIN_INTERVAL_MS[adapter.id]
       if (minInterval) {
         const lastAttempt = lastNetworkAttemptByProvider.get(adapter.id) ?? 0
@@ -159,6 +166,7 @@ export async function collectAllSessions(): Promise<{ upserted: number }> {
 
   let upserted = 0
   for (const adapter of listAdapters()) {
+    if (!isProviderEnabled(settings, adapter.id)) continue
     const started = Date.now()
     const scannedAt = new Date().toISOString()
     try {
@@ -214,6 +222,7 @@ export async function collectProviderSessions(
   if (!adapter) return { upserted: 0 }
   const db = getDb()
   const settings = getSettings(db)
+  if (!isProviderEnabled(settings, provider)) return { upserted: 0 }
   const ctx: AdapterContext = {
     networkQuotaRefresh: settings.network_quota_refresh,
     settings
@@ -292,13 +301,17 @@ export function startRealtimeWatchers(): void {
 }
 
 function ensureRealtimeWatchers(): void {
+  const settings = getSettings(getDb())
   const roots: Array<{ provider: ProviderId; path: string }> = [
     { provider: 'grok', path: getGrokHome() },
     { provider: 'codex', path: getCodexHome() },
-    { provider: 'claude', path: getClaudeHome() }
+    { provider: 'claude', path: getClaudeHome() },
+    { provider: 'cursor', path: getCursorHome() },
+    { provider: 'opencode', path: getOpenCodeHome() }
   ]
 
   for (const root of roots) {
+    if (!isProviderEnabled(settings, root.provider)) continue
     if (watchedProviders.has(root.provider)) continue
     if (!existsSync(root.path)) {
       recordCollectorHealth(getDb(), root.provider, { watcher_status: 'missing' })
@@ -375,6 +388,21 @@ export function classifyProviderChange(
     provider === 'claude' &&
     (path.includes('sessions/') || path.includes('projects/')) &&
     (path.endsWith('.jsonl') || path.endsWith('.json'))
+  ) {
+    return 'session'
+  }
+  if (
+    provider === 'cursor' &&
+    path.includes('agent-transcripts/') &&
+    path.endsWith('.jsonl')
+  ) {
+    return 'session'
+  }
+  if (
+    provider === 'opencode' &&
+    (path === 'opencode.db' ||
+      path === 'opencode.db-wal' ||
+      path === 'opencode.db-shm')
   ) {
     return 'session'
   }

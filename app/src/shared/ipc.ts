@@ -3,6 +3,7 @@ import {
   AlertRowSchema,
   AppSettingsSchema,
   BurnPointSchema,
+  BurnSeriesSchema,
   CollectorHealthSchema,
   DailyUsagePointSchema,
   DashboardFilterSchema,
@@ -22,6 +23,7 @@ export const IPC = {
   getQuotas: 'dashboard:getQuotas',
   getDailyUsage: 'dashboard:getDailyUsage',
   getBurn: 'dashboard:getBurn',
+  getBurnSeries: 'dashboard:getBurnSeries',
   getModelMix: 'dashboard:getModelMix',
   getSessions: 'dashboard:getSessions',
   getCollectorHealth: 'dashboard:getCollectorHealth',
@@ -51,6 +53,12 @@ export const GetBurnInput = z.object({
 })
 export type GetBurnInput = z.infer<typeof GetBurnInput>
 
+export const GetBurnSeriesInput = z.object({
+  provider: z.union([ProviderIdSchema, z.literal('all')]).default('all'),
+  range_days: RangeDaysSchema.default(7)
+})
+export type GetBurnSeriesInput = z.infer<typeof GetBurnSeriesInput>
+
 export const ExportInput = z.object({
   format: ExportFormatSchema,
   filter: DashboardFilterSchema
@@ -72,6 +80,7 @@ export interface DashboardApi {
   getQuotas: () => Promise<z.infer<typeof QuotaSnapshotSchema>[]>
   getDailyUsage: (input?: GetOverviewInput) => Promise<z.infer<typeof DailyUsagePointSchema>[]>
   getBurn: (input: GetBurnInput) => Promise<z.infer<typeof BurnPointSchema>[]>
+  getBurnSeries: (input?: GetBurnSeriesInput) => Promise<z.infer<typeof BurnSeriesSchema>[]>
   getModelMix: (input?: GetOverviewInput) => Promise<z.infer<typeof ModelMixItemSchema>[]>
   getSessions: (input?: GetSessionsInput) => Promise<z.infer<typeof SessionRowSchema>[]>
   getCollectorHealth: () => Promise<z.infer<typeof CollectorHealthSchema>[]>

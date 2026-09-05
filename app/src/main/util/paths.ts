@@ -38,6 +38,10 @@ export function getClaudeHome(): string {
   return process.env.CLAUDE_HOME || join(homedir(), '.claude')
 }
 
+export function getCursorHome(): string {
+  return process.env.CURSOR_HOME || join(homedir(), '.cursor')
+}
+
 /** OpenCode keeps its SQLite store under the XDG data dir on every platform. */
 export function getOpenCodeHome(): string {
   return (

@@ -79,6 +79,14 @@ describe('codexWindows', () => {
     expect(codexWindows({ primary: { usedPercent: -5 } })[0].used_pct).toBe(0)
   })
 
+  it('accepts reset epochs emitted in milliseconds', () => {
+    const resetMs = 1788621323000
+    expect(
+      codexWindows({ primary: { usedPercent: 4, resetsAt: resetMs } })[0]
+        .resets_at
+    ).toBe(new Date(resetMs).toISOString())
+  })
+
   it('skips a window with no usable percentage', () => {
     expect(codexWindows({ primary: null, secondary: { usedPercent: 10 } })).toHaveLength(
       1

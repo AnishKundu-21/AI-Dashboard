@@ -18,6 +18,7 @@ import { collectClaudeSessions } from '../src/main/collectors/claude/sessions'
 import { collectCodexSessions } from '../src/main/collectors/codex/sessions'
 import { collectGrokSessions } from '../src/main/collectors/grok/sessions'
 import { collectOpenCodeSessions } from '../src/main/collectors/opencode/sessions'
+import { collectCursorSessions } from '../src/main/collectors/cursor/sessions'
 import { primeRateTable, rateForModel, resetPricingForTests } from '../src/main/pricing/store'
 import { RATES_URL } from '../src/main/pricing/store'
 import type { ScanCache } from '../src/main/collectors/scanCache'
@@ -100,6 +101,7 @@ describe('real-data verification', () => {
         claude: join(homedir(), '.claude'),
         codex: join(homedir(), '.codex'),
         grok: join(homedir(), '.grok'),
+        cursor: join(homedir(), '.cursor'),
         opencode: join(homedir(), '.local', 'share', 'opencode')
       }
 
@@ -152,6 +154,15 @@ describe('real-data verification', () => {
         console.log(`\ngrok cold scan: ${Date.now() - t0}ms`)
         summarise('GROK', rows)
         all.push(...rows)
+      }
+
+      if (existsSync(homes.cursor)) {
+        const t0 = Date.now()
+        const collected = collectCursorSessions(homes.cursor, cache)
+        console.log(`\ncursor cold scan: ${Date.now() - t0}ms`)
+        summarise('CURSOR', collected.sessions)
+        all.push(...collected.sessions)
+        allEvents.push(...collected.events)
       }
 
       if (existsSync(homes.opencode)) {

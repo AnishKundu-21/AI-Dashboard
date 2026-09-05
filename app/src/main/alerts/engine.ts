@@ -1,17 +1,20 @@
 import type Database from 'better-sqlite3'
 import { Notification } from 'electron'
 import type { QuotaSnapshot } from '../../shared/types'
-import { applyClaudeBurnWindow, getLatestQuotas } from '../db/queries'
+import { applyBurnWindow, getLatestQuotas } from '../db/queries'
 import { getSettings } from '../db/queries'
 import { willExhaustWithinDays } from '../analytics/projections'
+import { providerMeta } from '../../shared/providers'
 
 /**
  * Simple rule engine. Creates undismissed alerts once per (rule_id, provider, day).
- * Claude's snapshot is remapped to its weekly window first — its raw used_pct
- * tracks the 5h session window, which resets too often to drive burn alerts.
+ * Snapshots are remapped to their weekly windows first — short session
+ * windows reset too often to drive runway alerts.
  */
 export function evaluateAlerts(db: Database.Database): void {
-  const quotas = getLatestQuotas(db).map(applyClaudeBurnWindow)
+  const quotas = getLatestQuotas(db)
+    .filter((quota) => providerMeta(quota.provider).reportsQuota)
+    .map(applyBurnWindow)
   const day = new Date().toISOString().slice(0, 10)
 
   for (const q of quotas) {
@@ -89,11 +92,7 @@ export function evaluateAlerts(db: Database.Database): void {
 }
 
 function label(q: QuotaSnapshot): string {
-  return q.provider === 'grok'
-    ? 'Grok'
-    : q.provider === 'claude'
-      ? 'Claude'
-      : 'Codex'
+  return providerMeta(q.provider).short
 }
 
 function maybeInsert(

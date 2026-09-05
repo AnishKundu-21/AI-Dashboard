@@ -1,9 +1,15 @@
 import type Database from 'better-sqlite3'
-import { providerIds, providerMeta, type ProviderId } from '../../shared/providers'
+import {
+  enabledProviderIds,
+  isProviderEnabled,
+  providerMeta,
+  type ProviderId
+} from '../../shared/providers'
 import type {
   AlertRow,
   AppSettings,
   BurnPoint,
+  BurnSeries,
   CollectorHealth,
   DailyUsagePoint,
   ModelMixItem,
@@ -24,8 +30,24 @@ import { normalizeModelName } from '../collectors/models'
 
 type ProviderFilter = ProviderId | 'all'
 
-function providerClause(provider: ProviderFilter, column = 'provider'): string {
-  return provider === 'all' ? '1=1' : `${column} = @provider`
+function providerClause(
+  provider: ProviderFilter,
+  enabled: readonly ProviderId[],
+  column = 'provider'
+): string {
+  if (provider !== 'all') {
+    return enabled.includes(provider)
+      ? `${column} = @provider`
+      : '@provider IS NOT NULL AND 0=1'
+  }
+  if (enabled.length === 0) return '@provider IS NOT NULL AND 0=1'
+
+  // Provider ids come from the internal registry and are constrained to
+  // lowercase slugs. Quoting them here keeps call-site parameter objects
+  // unchanged while allowing an arbitrary enabled subset.
+  return `@provider IS NOT NULL AND ${column} IN (${enabled
+    .map((id) => `'${id}'`)
+    .join(', ')})`
 }
 
 /**
@@ -59,7 +81,15 @@ export function setSettings(
   partial: Partial<AppSettings>
 ): AppSettings {
   const current = getSettings(db)
-  const next = AppSettingsSchema.parse({ ...current, ...partial, plans: { ...current.plans, ...partial.plans } })
+  const next = AppSettingsSchema.parse({
+    ...current,
+    ...partial,
+    enabled_providers: {
+      ...current.enabled_providers,
+      ...partial.enabled_providers
+    },
+    plans: { ...current.plans, ...partial.plans }
+  })
   db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('app', ?)`).run(
     JSON.stringify(next)
   )
@@ -67,6 +97,7 @@ export function setSettings(
 }
 
 export function getLatestQuotas(db: Database.Database): QuotaSnapshot[] {
+  const enabled = enabledProviderIds(getSettings(db))
   const rows = db
     .prepare(
       `
@@ -86,14 +117,29 @@ export function getLatestQuotas(db: Database.Database): QuotaSnapshot[] {
   for (const r of rows) {
     let products: Record<string, number> | undefined
     let windows: QuotaSnapshot['windows']
+    let quotaWindows: QuotaSnapshot['quota_windows']
+    let unavailable: QuotaSnapshot['unavailable']
+    let transport: QuotaSnapshot['transport']
+    let resetCredits: QuotaSnapshot['reset_credits']
+    let remainingText: string | undefined
     if (typeof r.raw_summary_json === 'string' && r.raw_summary_json) {
       try {
         const parsed = JSON.parse(r.raw_summary_json) as {
           products?: Record<string, number>
           windows?: QuotaSnapshot['windows']
+          quota_windows?: QuotaSnapshot['quota_windows']
+          unavailable?: QuotaSnapshot['unavailable']
+          transport?: QuotaSnapshot['transport']
+          reset_credits?: QuotaSnapshot['reset_credits']
+          remaining_text?: string
         }
         products = parsed.products ?? undefined
         windows = parsed.windows ?? undefined
+        quotaWindows = parsed.quota_windows ?? undefined
+        unavailable = parsed.unavailable ?? undefined
+        transport = parsed.transport ?? undefined
+        resetCredits = parsed.reset_credits ?? undefined
+        remainingText = parsed.remaining_text ?? undefined
       } catch {
         products = undefined
       }
@@ -113,12 +159,17 @@ export function getLatestQuotas(db: Database.Database): QuotaSnapshot[] {
       stale: Boolean(r.stale),
       live_captured_at: (r.live_captured_at as string | null) ?? null,
       windows,
-      products
+      products,
+      quota_windows: quotaWindows,
+      unavailable,
+      transport,
+      reset_credits: resetCredits,
+      remaining_text: remainingText
     })
   }
 
-  // Ensure all three providers appear (not connected placeholders)
-  return providerIds().map((id) => {
+  // Ensure every enabled provider appears, even before its first snapshot.
+  return enabled.map((id) => {
     const existing = byProvider.get(id)
     if (existing) return existing
     return {
@@ -151,7 +202,9 @@ export function getOverview(
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): OverviewMetrics {
-  const timezone = getSettings(db).timezone
+  const settings = getSettings(db)
+  const timezone = settings.timezone
+  const enabled = enabledProviderIds(settings)
   const sinceMs = rangeStartMs(rangeDays, timezone)
 
   const row = db
@@ -167,7 +220,7 @@ export function getOverview(
       MIN(ts_ms) AS min_ts_ms
     FROM usage_events
     WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
-      AND ${providerClause(provider)}
+      AND ${providerClause(provider, enabled)}
   `
     )
     .get({ sinceMs, provider }) as {
@@ -185,11 +238,20 @@ export function getOverview(
     SELECT
       provider,
       COALESCE(SUM(uncached_input + cached_input + cache_creation + output), 0) AS tokens_total,
+      COALESCE(SUM(uncached_input), 0) AS uncached_input,
+      COALESCE(SUM(cached_input), 0) AS cached_input,
+      COALESCE(SUM(cache_creation), 0) AS cache_creation,
+      COALESCE(SUM(output), 0) AS output,
+      COALESCE(SUM(reasoning), 0) AS reasoning,
+      COUNT(*) AS model_calls,
       COALESCE(SUM(cost_usd), 0) AS api_equiv_usd,
+      COALESCE(SUM(reported_cost_usd), 0) AS provider_cost_usd,
+      COALESCE(SUM(cache_savings_usd), 0) AS cache_savings_usd,
+      COUNT(CASE WHEN cost_usd IS NULL THEN 1 END) AS unpriced_calls,
       COUNT(DISTINCT session_id) AS session_count
     FROM usage_events
     WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
-      AND ${providerClause(provider)}
+      AND ${providerClause(provider, enabled)}
     GROUP BY provider
     ORDER BY tokens_total DESC
   `
@@ -210,14 +272,15 @@ export function getOverview(
   const breakdown = db
     .prepare(
       `SELECT
-         COALESCE(SUM(uncached_input), 0) AS input,
+         COALESCE(SUM(uncached_input), 0) AS uncached_input,
+         COALESCE(SUM(cached_input), 0) AS cached_input,
+         COALESCE(SUM(cache_creation), 0) AS cache_creation,
          COALESCE(SUM(output), 0) AS output,
-         COALESCE(SUM(cached_input + cache_creation), 0) AS cached,
          COALESCE(SUM(reasoning), 0) AS reasoning,
          COUNT(*) AS model_calls
        FROM usage_events
        WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
-         AND ${providerClause(provider)}`
+         AND ${providerClause(provider, enabled)}`
     )
     .get({ sinceMs, provider }) as OverviewMetrics['token_breakdown']
 
@@ -256,7 +319,9 @@ export function getDailyUsage(
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): DailyUsagePoint[] {
-  const timezone = getSettings(db).timezone
+  const settings = getSettings(db)
+  const timezone = settings.timezone
+  const enabled = enabledProviderIds(settings)
   const sinceMs = rangeStartMs(rangeDays, timezone)
   const dayOf = makeDayFormatter(timezone)
 
@@ -264,11 +329,15 @@ export function getDailyUsage(
     .prepare(
       `
     SELECT provider, ts_ms, session_id,
+           uncached_input, cached_input, cache_creation, output, reasoning,
            (uncached_input + cached_input + cache_creation + output) AS tokens_total,
-           COALESCE(cost_usd, 0) AS api_equiv_usd
+           COALESCE(cost_usd, 0) AS api_equiv_usd,
+           COALESCE(reported_cost_usd, 0) AS provider_cost_usd,
+           COALESCE(cache_savings_usd, 0) AS cache_savings_usd,
+           CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END AS unpriced_calls
     FROM usage_events
     WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
-      AND ${providerClause(provider)}
+      AND ${providerClause(provider, enabled)}
   `
     )
     .all({ sinceMs, provider }) as Array<{
@@ -276,7 +345,15 @@ export function getDailyUsage(
       ts_ms: number
       session_id: string
       tokens_total: number
+      uncached_input: number
+      cached_input: number
+      cache_creation: number
+      output: number
+      reasoning: number
       api_equiv_usd: number
+      provider_cost_usd: number
+      cache_savings_usd: number
+      unpriced_calls: number
     }>
 
   const grouped = new Map<string, DailyUsagePoint & { sessions: Set<string> }>()
@@ -289,14 +366,32 @@ export function getDailyUsage(
         day,
         provider: row.provider,
         tokens_total: 0,
+        uncached_input: 0,
+        cached_input: 0,
+        cache_creation: 0,
+        output: 0,
+        reasoning: 0,
+        model_calls: 0,
         session_count: 0,
         api_equiv_usd: 0,
+        provider_cost_usd: 0,
+        cache_savings_usd: 0,
+        unpriced_calls: 0,
         sessions: new Set<string>()
       }
       grouped.set(key, current)
     }
     current.tokens_total += row.tokens_total
+    current.uncached_input += row.uncached_input
+    current.cached_input += row.cached_input
+    current.cache_creation += row.cache_creation
+    current.output += row.output
+    current.reasoning += row.reasoning
+    current.model_calls += 1
     current.api_equiv_usd += row.api_equiv_usd
+    current.provider_cost_usd += row.provider_cost_usd
+    current.cache_savings_usd += row.cache_savings_usd
+    current.unpriced_calls += row.unpriced_calls
     current.sessions.add(row.session_id)
   }
 
@@ -306,7 +401,9 @@ export function getDailyUsage(
       // A session active on two days counts once on each, which is what the
       // chart is asking for.
       session_count: sessions.size,
-      api_equiv_usd: Math.round(point.api_equiv_usd * 1e6) / 1e6
+      api_equiv_usd: Math.round(point.api_equiv_usd * 1e6) / 1e6,
+      provider_cost_usd: Math.round(point.provider_cost_usd * 1e6) / 1e6,
+      cache_savings_usd: Math.round(point.cache_savings_usd * 1e6) / 1e6
     }))
     .sort((a, b) => a.day.localeCompare(b.day))
 }
@@ -325,7 +422,9 @@ export function getSessions(
     offset?: number
   } = {}
 ): SessionRow[] {
-  const sinceIso = rangeStart(rangeDays, getSettings(db).timezone)?.toISOString() ?? null
+  const settings = getSettings(db)
+  const enabled = enabledProviderIds(settings)
+  const sinceIso = rangeStart(rangeDays, settings.timezone)?.toISOString() ?? null
 
   let sql = `
     SELECT id, provider, project, model, tokens_in, tokens_out, tokens_total,
@@ -335,7 +434,7 @@ export function getSessions(
            started_at, ended_at, source
     FROM sessions
     WHERE (@sinceIso IS NULL OR (started_at IS NOT NULL AND started_at >= @sinceIso))
-      AND ${providerClause(provider)}
+      AND ${providerClause(provider, enabled)}
   `
   const params: Record<string, unknown> = { sinceIso, provider }
 
@@ -344,10 +443,6 @@ export function getSessions(
     params.q = `%${search.trim()}%`
   }
 
-  if (options.model?.trim()) {
-    sql += ` AND lower(model) = lower(@model)`
-    params.model = options.model.trim()
-  }
   if (options.day) {
     sql += ` AND substr(started_at, 1, 10) = @day`
     params.day = options.day
@@ -361,18 +456,33 @@ export function getSessions(
   } as const
   const sortBy = sortColumns[options.sortBy ?? 'started_at']
   const sortDir = options.sortDir === 'asc' ? 'ASC' : 'DESC'
-  params.limit = Math.min(Math.max(options.limit ?? 100, 1), 500)
-  params.offset = Math.max(options.offset ?? 0, 0)
-  sql += ` ORDER BY ${sortBy} ${sortDir}, id ASC LIMIT @limit OFFSET @offset`
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 500)
+  const offset = Math.max(options.offset ?? 0, 0)
+  sql += ` ORDER BY ${sortBy} ${sortDir}, id ASC`
+  // Model names are normalised for display (provider prefixes and dated
+  // aliases collapse together), so an exact SQL comparison against the raw
+  // transcript id would make clicking an analytics model return no sessions.
+  // For a model drill-down, normalise first and paginate the matching rows.
+  if (!options.model?.trim()) {
+    params.limit = limit
+    params.offset = offset
+    sql += ` LIMIT @limit OFFSET @offset`
+  }
 
   const rows = db.prepare(sql).all(params) as Array<
     SessionRow & { unpriced: number | boolean }
   >
-  return rows.map((row) => ({
+  const normalized = rows.map((row) => ({
     ...row,
     model: normalizeModelName(row.provider, row.model) ?? 'Unknown',
     unpriced: Boolean(row.unpriced)
   }))
+  const selectedModel = options.model?.trim().toLocaleLowerCase()
+  return selectedModel
+    ? normalized
+        .filter((row) => row.model.toLocaleLowerCase() === selectedModel)
+        .slice(offset, offset + limit)
+    : normalized
 }
 
 export function getCollectorHealth(db: Database.Database): CollectorHealth[] {
@@ -380,7 +490,7 @@ export function getCollectorHealth(db: Database.Database): CollectorHealth[] {
     Omit<CollectorHealth, 'source_label'>
   >
   const byProvider = new Map(rows.map((row) => [row.provider, row]))
-  return providerIds().map((provider) => ({
+  return enabledProviderIds(getSettings(db)).map((provider) => ({
     provider,
     // From the provider's manifest, so a newly registered provider needs no
     // change here.
@@ -433,17 +543,29 @@ export function getModelMix(
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): ModelMixItem[] {
-  const sinceMs = rangeStartMs(rangeDays, getSettings(db).timezone)
+  const settings = getSettings(db)
+  const enabled = enabledProviderIds(settings)
+  const sinceMs = rangeStartMs(rangeDays, settings.timezone)
 
   const rows = db
     .prepare(
       `
-    SELECT model, provider,
-           SUM(uncached_input + cached_input + cache_creation + output) AS tokens_total
+    SELECT model, provider, session_id,
+           SUM(uncached_input + cached_input + cache_creation + output) AS tokens_total,
+           SUM(uncached_input) AS uncached_input,
+           SUM(cached_input) AS cached_input,
+           SUM(cache_creation) AS cache_creation,
+           SUM(output) AS output,
+           SUM(reasoning) AS reasoning,
+           COUNT(*) AS model_calls,
+           COALESCE(SUM(cost_usd), 0) AS api_equiv_usd,
+           COALESCE(SUM(reported_cost_usd), 0) AS provider_cost_usd,
+           COALESCE(SUM(cache_savings_usd), 0) AS cache_savings_usd,
+           COUNT(CASE WHEN cost_usd IS NULL THEN 1 END) AS unpriced_calls
     FROM usage_events
     WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
-      AND ${providerClause(provider)}
-    GROUP BY model, provider
+      AND ${providerClause(provider, enabled)}
+    GROUP BY model, provider, session_id
     HAVING tokens_total > 0
     ORDER BY tokens_total DESC
   `
@@ -451,23 +573,53 @@ export function getModelMix(
     .all({ sinceMs, provider }) as Array<{
     model: string
     provider: ProviderId
+    session_id: string
     tokens_total: number
+    uncached_input: number
+    cached_input: number
+    cache_creation: number
+    output: number
+    reasoning: number
+    model_calls: number
+    api_equiv_usd: number
+    provider_cost_usd: number
+    cache_savings_usd: number
+    unpriced_calls: number
   }>
 
   const grouped = new Map<
     string,
-    { model: string; provider: ProviderId; tokens_total: number }
+    Omit<ModelMixItem, 'share'> & { sessions: Set<string> }
   >()
   for (const row of rows) {
     const model = normalizeModelName(row.provider, row.model)
     if (!model) continue
     const key = `${row.provider}:${model.toLowerCase()}`
     const current = grouped.get(key)
-    if (current) current.tokens_total += row.tokens_total
-    else grouped.set(key, { ...row, model })
+    if (current) {
+      current.tokens_total += row.tokens_total
+      current.uncached_input += row.uncached_input
+      current.cached_input += row.cached_input
+      current.cache_creation += row.cache_creation
+      current.output += row.output
+      current.reasoning += row.reasoning
+      current.model_calls += row.model_calls
+      current.api_equiv_usd += row.api_equiv_usd
+      current.provider_cost_usd += row.provider_cost_usd
+      current.cache_savings_usd += row.cache_savings_usd
+      current.unpriced_calls += row.unpriced_calls
+      current.sessions.add(row.session_id)
+    }
+    else {
+      const { session_id, ...totals } = row
+      grouped.set(key, { ...totals, model, session_count: 1, sessions: new Set([session_id]) })
+    }
   }
 
-  const normalized = Array.from(grouped.values()).sort(
+  const normalized = Array.from(grouped.values()).map(({ sessions, ...row }) => ({
+    ...row,
+    session_count: sessions.size
+  })).sort(
     (a, b) => b.tokens_total - a.tokens_total
   )
   const total = normalized.reduce((sum, row) => sum + row.tokens_total, 0) || 1
@@ -477,38 +629,63 @@ export function getModelMix(
   }))
 }
 
-// Claude's primary used_pct tracks the 5h session window, which resets multiple
-// times a day and is useless for a burn-rate trend. Burn rate instead follows
-// the weekly (seven_day) window, carried per-snapshot inside raw_summary_json.
-const CLAUDE_BURN_WINDOW_LABEL = 'Weekly (all models)'
+type BurnWindow = {
+  label: string
+  used_pct: number | null
+  remaining_pct: number | null
+  reset_at: string | null
+}
 
-// Exported so every burn-rate consumer (chart, projection cards, alerts) reads
-// the same window instead of each re-deriving — and drifting — independently.
-export function applyClaudeBurnWindow(q: QuotaSnapshot): QuotaSnapshot {
-  if (q.provider !== 'claude') return q
-  const weekly = q.windows?.find((w) => w.label === CLAUDE_BURN_WINDOW_LABEL)
+/** Prefer the provider's aggregate weekly allowance over short session windows. */
+function preferredWeeklyWindow(q: Pick<QuotaSnapshot, 'quota_windows' | 'windows'>): BurnWindow | undefined {
+  const normalized = q.quota_windows?.filter((window) => window.kind === 'weekly') ?? []
+  const normalizedWeekly =
+    normalized.find((window) =>
+      /all.models|seven.day/i.test(`${window.id} ${window.label}`)
+    ) ?? normalized[0]
+  if (normalizedWeekly) {
+    return {
+      label: normalizedWeekly.label,
+      used_pct: normalizedWeekly.used_pct,
+      remaining_pct:
+        normalizedWeekly.used_pct == null ? null : 100 - normalizedWeekly.used_pct,
+      reset_at: normalizedWeekly.resets_at
+    }
+  }
+
+  const legacy = q.windows?.filter((window) => /week/i.test(window.label)) ?? []
+  return legacy.find((window) => /all.models/i.test(window.label)) ?? legacy[0]
+}
+
+// Exported so projections, alerts, and graph history cannot accidentally mix
+// a five-hour/session percentage with a weekly runway calculation.
+export function applyBurnWindow(q: QuotaSnapshot): QuotaSnapshot {
+  const weekly = preferredWeeklyWindow(q)
   if (!weekly) return q
   return {
     ...q,
     used_pct: weekly.used_pct,
     remaining_pct: weekly.remaining_pct,
     reset_at: weekly.reset_at,
-    window_label: CLAUDE_BURN_WINDOW_LABEL
+    window_label: weekly.label
   }
 }
 
-function claudeBurnSnapshot(q: QuotaSnapshot | undefined): QuotaSnapshot | undefined {
-  return q ? applyClaudeBurnWindow(q) : q
+/** Retained for callers that specifically want Claude's historical behaviour. */
+export function applyClaudeBurnWindow(q: QuotaSnapshot): QuotaSnapshot {
+  return q.provider === 'claude' ? applyBurnWindow(q) : q
 }
 
-function claudeWeeklyUsedPctFromRaw(raw: string | null): number | null {
-  if (!raw) return null
+function burnUsedPctFromRaw(raw: string | null, fallback: number): number {
+  if (!raw) return fallback
   try {
-    const parsed = JSON.parse(raw) as { windows?: QuotaSnapshot['windows'] }
-    const weekly = parsed.windows?.find((w) => w.label === CLAUDE_BURN_WINDOW_LABEL)
-    return weekly?.used_pct ?? null
+    const parsed = JSON.parse(raw) as {
+      windows?: QuotaSnapshot['windows']
+      quota_windows?: QuotaSnapshot['quota_windows']
+    }
+    return preferredWeeklyWindow(parsed)?.used_pct ?? fallback
   } catch {
-    return null
+    return fallback
   }
 }
 
@@ -517,9 +694,10 @@ export function getBurn(
   provider: ProviderId,
   rangeDays: RangeDays
 ): BurnPoint[] {
+  if (!isProviderEnabled(getSettings(db), provider)) return []
   const quotas = getLatestQuotas(db)
   const rawLatest = quotas.find((x) => x.provider === provider)
-  const latest = provider === 'claude' ? claudeBurnSnapshot(rawLatest) : rawLatest
+  const latest = rawLatest ? applyBurnWindow(rawLatest) : rawLatest
 
   const sinceIso = rangeStart(rangeDays, getSettings(db).timezone)?.toISOString() ?? null
 
@@ -542,8 +720,7 @@ export function getBurn(
 
   const history: Array<{ day: string; used_pct: number; captured_at: string }> = []
   for (const r of rows) {
-    const used = provider === 'claude' ? claudeWeeklyUsedPctFromRaw(r.raw_summary_json) : r.used_pct
-    if (used == null) continue
+    const used = burnUsedPctFromRaw(r.raw_summary_json, r.used_pct)
     history.push({ day: r.captured_at.slice(0, 10), used_pct: used, captured_at: r.captured_at })
   }
 
@@ -554,8 +731,158 @@ export function getBurn(
   return buildBurnSeries(latest, history, effectiveDays)
 }
 
+type StoredBurnWindow = BurnWindow & { id: string }
+
+function weeklyWindowsFromStored(
+  raw: string | null,
+  fallback: { used_pct: number; reset_at: string | null; window_label: string | null }
+): StoredBurnWindow[] {
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as {
+        quota_windows?: QuotaSnapshot['quota_windows']
+        windows?: QuotaSnapshot['windows']
+      }
+      const normalized = (parsed.quota_windows ?? [])
+        .filter((window) => window.kind === 'weekly' && window.used_pct != null)
+        .map((window) => ({
+          id: window.id,
+          label: window.label,
+          used_pct: window.used_pct,
+          remaining_pct: 100 - (window.used_pct ?? 0),
+          reset_at: window.resets_at
+        }))
+      if (normalized.length > 0) return normalized
+
+      const legacy = (parsed.windows ?? [])
+        .filter((window) => /week/i.test(window.label) && window.used_pct != null)
+        .map((window) => ({
+          id: window.label.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+          ...window
+        }))
+      if (legacy.length > 0) return legacy
+    } catch {
+      // The primary columns below still preserve the provider-wide window.
+    }
+  }
+
+  if (fallback.window_label && /week/i.test(fallback.window_label)) {
+    return [{
+      id: 'weekly',
+      label: fallback.window_label,
+      used_pct: fallback.used_pct,
+      remaining_pct: 100 - fallback.used_pct,
+      reset_at: fallback.reset_at
+    }]
+  }
+  return []
+}
+
+function burnSeriesLabel(provider: ProviderId, windowLabel: string): string {
+  const scope = windowLabel.match(/\(([^)]+)\)/)?.[1]
+  if (scope) {
+    const displayScope = scope.toLowerCase() === 'all models' ? 'All models' : scope
+    return `${providerMeta(provider).short} · ${displayScope}`
+  }
+  return providerMeta(provider).name
+}
+
+/**
+ * Every aggregate weekly quota stream retained by the providers. Claude can
+ * expose all-model, Opus, and Sonnet windows; Codex and Grok normally expose
+ * one provider-wide weekly stream.
+ */
+export function getBurnSeries(
+  db: Database.Database,
+  provider: ProviderFilter,
+  rangeDays: RangeDays
+): BurnSeries[] {
+  const settings = getSettings(db)
+  const enabled = enabledProviderIds(settings).filter((id) => providerMeta(id).reportsQuota)
+  const selected = provider === 'all' ? enabled : enabled.filter((id) => id === provider)
+  const sinceIso = rangeStart(rangeDays, settings.timezone)?.toISOString() ?? null
+  const latestByProvider = new Map(getLatestQuotas(db).map((quota) => [quota.provider, quota]))
+  const result: BurnSeries[] = []
+
+  for (const id of selected) {
+    const rows = db.prepare(`
+      SELECT captured_at, used_pct, reset_at, window_label, raw_summary_json
+      FROM quota_snapshots
+      WHERE provider = @provider
+        AND used_pct IS NOT NULL
+        AND (@sinceIso IS NULL OR captured_at >= @sinceIso)
+      ORDER BY captured_at ASC
+    `).all({ provider: id, sinceIso }) as Array<{
+      captured_at: string
+      used_pct: number
+      reset_at: string | null
+      window_label: string | null
+      raw_summary_json: string | null
+    }>
+
+    const grouped = new Map<string, {
+      id: string
+      label: string
+      samples: Array<{
+        day: string
+        captured_at: string
+        used_pct: number
+        reset_at: string | null
+      }>
+    }>()
+
+    for (const row of rows) {
+      for (const window of weeklyWindowsFromStored(row.raw_summary_json, row)) {
+        const key = window.label.toLowerCase()
+        const group = grouped.get(key) ?? { id: window.id, label: window.label, samples: [] }
+        group.samples.push({
+          day: row.captured_at.slice(0, 10),
+          captured_at: row.captured_at,
+          used_pct: window.used_pct ?? row.used_pct,
+          reset_at: window.reset_at
+        })
+        grouped.set(key, group)
+      }
+    }
+
+    for (const group of grouped.values()) {
+      const latest = group.samples.at(-1)
+      if (!latest) continue
+      const base = latestByProvider.get(id)
+      const snapshot: QuotaSnapshot = {
+        ...(base ?? {
+          provider: id,
+          plan_label: null,
+          plan_source: 'unknown',
+          confidence: 'live',
+          source: 'quota history',
+          auth_connected: true
+        }),
+        captured_at: latest.captured_at,
+        used_pct: latest.used_pct,
+        remaining_pct: 100 - latest.used_pct,
+        reset_at: latest.reset_at,
+        window_label: group.label
+      }
+      const effectiveDays = rangeDays === 0
+        ? inclusiveDaysSince(group.samples[0]?.day ?? null)
+        : rangeDays
+      result.push({
+        id: `${id}:${group.id}`,
+        provider: id,
+        label: burnSeriesLabel(id, group.label),
+        points: buildBurnSeries(snapshot, group.samples, effectiveDays)
+      })
+    }
+  }
+
+  return result
+}
+
 export function getProjections(db: Database.Database): ProjectionCard[] {
-  const quotas = getLatestQuotas(db).map(applyClaudeBurnWindow)
+  const quotas = getLatestQuotas(db)
+    .filter((quota) => providerMeta(quota.provider).reportsQuota)
+    .map(applyBurnWindow)
   const since = new Date()
   since.setDate(since.getDate() - 7)
   const sinceDay = since.toISOString().slice(0, 10)
@@ -580,7 +907,8 @@ export function getProjections(db: Database.Database): ProjectionCard[] {
 }
 
 export function listAlerts(db: Database.Database): AlertRow[] {
-  return db
+  const enabled = new Set(enabledProviderIds(getSettings(db)))
+  const rows = db
     .prepare(
       `
     SELECT id, provider, level, title, body, rule_id, created_at, dismissed_at
@@ -591,6 +919,7 @@ export function listAlerts(db: Database.Database): AlertRow[] {
   `
     )
     .all() as AlertRow[]
+  return rows.filter((alert) => !alert.provider || enabled.has(alert.provider))
 }
 
 export function dismissAlert(db: Database.Database, id: string): void {
@@ -688,9 +1017,23 @@ export function exportAsCsv(
 
   lines.push('')
   lines.push(
-    ['section', 'day', 'provider', 'tokens_total', 'session_count', 'api_equiv_usd'].join(
-      ','
-    )
+    [
+      'section',
+      'day',
+      'provider',
+      'tokens_total',
+      'uncached_input',
+      'cached_input',
+      'cache_creation',
+      'output',
+      'reasoning',
+      'model_calls',
+      'session_count',
+      'api_equiv_usd',
+      'provider_cost_usd',
+      'cache_savings_usd',
+      'unpriced_calls'
+    ].join(',')
   )
   for (const d of daily) {
     lines.push(
@@ -699,8 +1042,17 @@ export function exportAsCsv(
         d.day,
         d.provider,
         d.tokens_total,
+        d.uncached_input,
+        d.cached_input,
+        d.cache_creation,
+        d.output,
+        d.reasoning,
+        d.model_calls,
         d.session_count,
-        d.api_equiv_usd
+        d.api_equiv_usd,
+        d.provider_cost_usd,
+        d.cache_savings_usd,
+        d.unpriced_calls
       ]
         .map(escape)
         .join(',')

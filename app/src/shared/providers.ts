@@ -41,6 +41,24 @@ export function providerIds(): ProviderId[] {
   return [...REGISTRY.keys()]
 }
 
+/**
+ * Provider selection is stored sparsely: an omitted id is enabled. This keeps
+ * existing installations and newly registered providers working without a
+ * settings migration, while an explicit `false` remains durable.
+ */
+export function isProviderEnabled(
+  settings: { enabled_providers?: Record<string, boolean> },
+  id: ProviderId
+): boolean {
+  return settings.enabled_providers?.[id] !== false
+}
+
+export function enabledProviderIds(settings: {
+  enabled_providers?: Record<string, boolean>
+}): ProviderId[] {
+  return providerIds().filter((id) => isProviderEnabled(settings, id))
+}
+
 export function providerManifests(): ProviderManifest[] {
   return [...REGISTRY.values()]
 }
@@ -92,6 +110,17 @@ registerProvider({
   color: '#60a5fa',
   homeLabel: '~/.codex',
   reportsQuota: true
+})
+
+registerProvider({
+  id: 'cursor',
+  name: 'Cursor CLI',
+  short: 'Cursor',
+  color: '#facc15',
+  homeLabel: '~/.cursor',
+  // Cursor's local agent transcripts expose token usage, but its CLI does not
+  // publish a subscription-quota API that can be queried safely here.
+  reportsQuota: false
 })
 
 registerProvider({

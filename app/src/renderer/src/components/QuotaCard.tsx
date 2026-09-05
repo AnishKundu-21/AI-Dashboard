@@ -1,13 +1,29 @@
 import type { QuotaSnapshot } from '@shared/types'
 import { providerMeta } from '@shared/providers'
-import { confidenceBadge, relativeTime } from '../lib/format'
+import { confidenceBadge, formatResetAt, relativeTime } from '../lib/format'
 import { Gauge } from './Gauge'
 
-export function QuotaCard({ quota }: { quota: QuotaSnapshot }) {
+export function QuotaCard({
+  quota,
+  locale = 'en-US',
+  timezone = 'system'
+}: {
+  quota: QuotaSnapshot
+  locale?: string
+  timezone?: string
+}) {
   const meta = providerMeta(quota.provider)
   const badge = confidenceBadge(quota.confidence, quota.auth_connected, quota.stale)
   const used = quota.used_pct
   const connected = quota.auth_connected
+  const windows = quota.quota_windows?.length
+    ? quota.quota_windows.map((window) => ({
+        label: window.label,
+        remaining_pct:
+          window.used_pct == null ? null : Math.max(0, 100 - window.used_pct),
+        reset_at: window.resets_at
+      }))
+    : quota.windows ?? []
 
   const products =
     quota.products &&
@@ -24,7 +40,9 @@ export function QuotaCard({ quota }: { quota: QuotaSnapshot }) {
             <h3>{meta.name}</h3>
             <div className="plan">
               {quota.plan_label ?? 'Plan unknown'}
-              {quota.plan_source === 'api' ? ' · detected' : ''}
+              {quota.plan_source === 'api' || quota.plan_source === 'auth'
+                ? ' · detected'
+                : ''}
             </div>
           </div>
         </div>
@@ -50,12 +68,7 @@ export function QuotaCard({ quota }: { quota: QuotaSnapshot }) {
               <div className="kv-row">
                 <span>Resets</span>
                 <b>
-                  {quota.reset_at
-                    ? new Date(quota.reset_at).toLocaleDateString(undefined, {
-                        month: 'short',
-                        day: 'numeric'
-                      })
-                    : '—'}
+                  {formatResetAt(quota.reset_at, locale, timezone)}
                 </b>
               </div>
               {products ? (
@@ -74,12 +87,13 @@ export function QuotaCard({ quota }: { quota: QuotaSnapshot }) {
         </div>
       </div>
 
-      {quota.windows && quota.windows.length > 1 ? (
+      {windows.length > 1 ? (
         <div className="quota-windows">
-          {quota.windows.map((w, i) => (
+          {windows.map((w, i) => (
             <div key={`${w.label}-${i}`}>
               <span title={w.label}>{w.label}</span>
               <strong>{w.remaining_pct != null ? `${Math.round(w.remaining_pct)}%` : '—'}</strong>
+              <small>{formatResetAt(w.reset_at, locale, timezone)}</small>
             </div>
           ))}
         </div>

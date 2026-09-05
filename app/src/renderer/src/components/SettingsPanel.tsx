@@ -1,11 +1,23 @@
 import type { AppSettings, ProviderId } from '@shared/types'
-import { providerMeta, providerIds } from '@shared/providers'
+import { isProviderEnabled, providerMeta, providerIds } from '@shared/providers'
 import { CURRENCY_OPTIONS, LOCALE_OPTIONS, availableCurrencies, hasFxRates } from '../lib/format'
 
-const PLAN_PRESETS: Record<ProviderId, string[]> = {
+const PLAN_PRESETS: Record<string, string[]> = {
   grok: ['SuperGrok', 'X Premium+', 'Free', 'Custom'],
   claude: ['Free', 'Pro', 'Max', 'Team', 'Custom'],
-  codex: ['plus', 'pro', 'team', 'free', 'Custom']
+  codex: ['plus', 'pro', 'team', 'free', 'Custom'],
+  cursor: [
+    'Hobby',
+    'Start',
+    'Pro',
+    'Pro+',
+    'Ultra',
+    'Teams Standard',
+    'Teams Premium',
+    'Enterprise',
+    'Custom'
+  ],
+  opencode: ['BYOK', 'OpenCode Zen', 'Custom']
 }
 
 const TIMEZONES = [
@@ -55,8 +67,60 @@ export function SettingsPanel({ settings, onChange }: Props) {
     })
   }
 
+  const setProviderEnabled = async (provider: ProviderId, enabled: boolean) => {
+    await onChange({
+      enabled_providers: {
+        ...settings.enabled_providers,
+        [provider]: enabled
+      }
+    })
+  }
+
   return (
     <>
+      <article className="panel">
+        <div className="card-head">
+          <div>
+            <h3>Providers</h3>
+            <p>Choose which local AI tools the dashboard scans and displays</p>
+          </div>
+          <span className="status plain">
+            {providerIds().filter((id) => isProviderEnabled(settings, id)).length} enabled
+          </span>
+        </div>
+        {providerIds().map((id) => {
+          const meta = providerMeta(id)
+          const enabled = isProviderEnabled(settings, id)
+          return (
+            <div className="toggle-row" key={id}>
+              <div className="provider-toggle-copy">
+                <i className="swatch" style={{ background: meta.color }} />
+                <div>
+                  <strong>{meta.name}</strong>
+                  <span>
+                    {meta.homeLabel}
+                    {meta.reportsQuota
+                      ? ' · local usage and subscription limits'
+                      : ' · local usage and API-equivalent cost'}
+                  </span>
+                </div>
+              </div>
+              <button
+                className={`switch${enabled ? ' on' : ''}`}
+                type="button"
+                aria-pressed={enabled}
+                aria-label={`${enabled ? 'Disable' : 'Enable'} ${meta.name}`}
+                onClick={() => void setProviderEnabled(id, !enabled)}
+              />
+            </div>
+          )
+        })}
+        <div className="settings-note">
+          Disabling a provider stops new scans and quota requests and hides it from the
+          dashboard. Existing local history is kept and returns when you enable it again.
+        </div>
+      </article>
+
       <article className="panel">
         <div className="card-head">
           <div>
@@ -191,14 +255,14 @@ export function SettingsPanel({ settings, onChange }: Props) {
         <div className="card-head">
           <div>
             <h3>Provider plans</h3>
-            <p>Auto-detected from the API where possible; override the label if needed</p>
+            <p>Auto-detected where account metadata is available; every provider can be labelled manually</p>
           </div>
         </div>
         <div className="card-body">
           <div className="grid grid-3">
             {providerIds().map((id) => {
               const cfg = settings.plans[id] ?? { mode: 'auto' as const }
-              const presets = PLAN_PRESETS[id]
+              const presets = PLAN_PRESETS[id] ?? ['Custom']
               const presetValues = presets.filter((v) => v !== 'Custom')
               const selected = presetValues.includes(cfg.value ?? '') ? cfg.value : 'Custom'
               return (
@@ -208,7 +272,11 @@ export function SettingsPanel({ settings, onChange }: Props) {
                     <div>
                       <h4>{providerMeta(id).name}</h4>
                       <p>
-                        {cfg.detected ? `Detected: ${cfg.detected}` : 'No detection yet'}
+                        {cfg.detected
+                          ? `Detected: ${cfg.detected}`
+                          : providerMeta(id).reportsQuota
+                            ? 'No detection yet'
+                            : 'Local plan detection unavailable'}
                         {cfg.mode === 'manual' && cfg.value ? ` · showing ${cfg.value}` : ''}
                       </p>
                     </div>
@@ -221,11 +289,13 @@ export function SettingsPanel({ settings, onChange }: Props) {
                       value={cfg.mode}
                       onChange={(e) => void setPlanMode(id, e.target.value as 'auto' | 'manual')}
                     >
-                      <option value="auto">Auto-detect</option>
+                      <option value="auto">
+                        {providerMeta(id).reportsQuota ? 'Auto-detect' : 'Auto (not available)'}
+                      </option>
                       <option value="manual">Manual override</option>
                     </select>
                   </div>
-                  {cfg.mode === 'manual' ? (
+                  {cfg.mode === 'manual' || !providerMeta(id).reportsQuota ? (
                     <div className="field">
                       <label htmlFor={`plan-value-${id}`}>Plan label</label>
                       <select

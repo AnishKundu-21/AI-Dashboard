@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ProviderId, RangeDays } from '@shared/types'
-import { providerMeta, providerIds } from '@shared/providers'
+import { providerMeta } from '@shared/providers'
 import { Segmented, type SegmentedOption } from './Segmented'
 import {
   IconChevronDown,
@@ -27,6 +27,7 @@ const RANGES: Array<{ value: RangeDays; label: string }> = [
 interface Props {
   title: string
   provider: ProviderTab
+  providers: ProviderId[]
   onProvider: (p: ProviderTab) => void
   rangeDays: RangeDays
   onRange: (d: RangeDays) => void
@@ -40,6 +41,7 @@ interface Props {
 export function TopBar({
   title,
   provider,
+  providers,
   onProvider,
   rangeDays,
   onRange,
@@ -70,7 +72,7 @@ export function TopBar({
 
   const options: SegmentedOption<ProviderTab>[] = [
     { value: 'all', label: 'All' },
-    ...providerIds().map((p) => ({
+    ...providers.map((p) => ({
       value: p as ProviderTab,
       label: providerMeta(p).short,
       color: providerMeta(p).color

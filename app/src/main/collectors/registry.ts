@@ -4,6 +4,7 @@ import { grokAdapter } from './grok'
 import { codexAdapter } from './codex'
 import { claudeAdapter } from './claude'
 import { openCodeAdapter } from './opencode'
+import { cursorAdapter } from './cursor'
 
 const adapters = new Map<ProviderId, ProviderAdapter>()
 
@@ -11,6 +12,7 @@ export function registerDefaultAdapters(): void {
   registerAdapter(grokAdapter)
   registerAdapter(codexAdapter)
   registerAdapter(claudeAdapter)
+  registerAdapter(cursorAdapter)
   registerAdapter(openCodeAdapter)
 }
 

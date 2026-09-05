@@ -42,7 +42,9 @@ export function clampPercent(value: unknown): number | null {
 
 function isoFromEpochSeconds(value: unknown): string | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
-  return new Date(value * 1000).toISOString()
+  // App-server versions have emitted both Unix seconds and milliseconds.
+  const millis = value >= 1_000_000_000_000 ? value : value * 1000
+  return new Date(millis).toISOString()
 }
 
 function kindForDuration(mins: number): UsageWindow['kind'] {

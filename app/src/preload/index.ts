@@ -4,6 +4,7 @@ import {
   AlertsDismissInput,
   ExportInput,
   GetBurnInput,
+  GetBurnSeriesInput,
   GetOverviewInput,
   GetSessionsInput,
   IPC,
@@ -18,6 +19,8 @@ const api: DashboardApi = {
   getDailyUsage: (input) =>
     ipcRenderer.invoke(IPC.getDailyUsage, GetOverviewInput.parse(input ?? {})),
   getBurn: (input) => ipcRenderer.invoke(IPC.getBurn, GetBurnInput.parse(input)),
+  getBurnSeries: (input) =>
+    ipcRenderer.invoke(IPC.getBurnSeries, GetBurnSeriesInput.parse(input ?? {})),
   getModelMix: (input) =>
     ipcRenderer.invoke(IPC.getModelMix, GetOverviewInput.parse(input ?? {})),
   getSessions: (input) =>

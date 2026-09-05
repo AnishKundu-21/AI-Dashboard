@@ -9,6 +9,7 @@ const settings: AppSettings = {
   notify_enabled: true,
   network_quota_refresh: true,
   retention_days: 90,
+  enabled_providers: {},
   price_overrides: {},
   plans: {
     grok: { mode: 'auto', source: 'unknown' },
@@ -55,7 +56,7 @@ describe('mapClaudeUsage', () => {
     expect(snap.used_pct).toBe(8)
     expect(snap.remaining_pct).toBe(92)
     expect(snap.window_label).toBe('Session (5h)')
-    expect(snap.reset_at).toBe('2026-08-04T21:50:00.291106+00:00')
+    expect(snap.reset_at).toBe('2026-08-04T21:50:00.291Z')
     expect(snap.plan_label).toBe('pro')
     expect(snap.plan_source).toBe('auth')
     expect(snap.windows).toEqual([
@@ -63,13 +64,31 @@ describe('mapClaudeUsage', () => {
         label: 'Session (5h)',
         used_pct: 8,
         remaining_pct: 92,
-        reset_at: '2026-08-04T21:50:00.291106+00:00'
+        reset_at: '2026-08-04T21:50:00.291Z'
       },
       {
         label: 'Weekly (all models)',
         used_pct: 1,
         remaining_pct: 99,
-        reset_at: '2026-08-09T14:00:00.291133+00:00'
+        reset_at: '2026-08-09T14:00:00.291Z'
+      }
+    ])
+    expect(snap.quota_windows).toEqual([
+      {
+        id: 'five_hour',
+        kind: 'session',
+        label: 'Session (5h)',
+        used_pct: 8,
+        resets_at: '2026-08-04T21:50:00.291Z',
+        window_duration_mins: 300
+      },
+      {
+        id: 'seven_day',
+        kind: 'weekly',
+        label: 'Weekly (all models)',
+        used_pct: 1,
+        resets_at: '2026-08-09T14:00:00.291Z',
+        window_duration_mins: 10080
       }
     ])
   })
@@ -82,6 +101,7 @@ describe('mapClaudeUsage', () => {
     expect(snap.confidence).toBe('estimate')
     expect(snap.used_pct).toBeNull()
     expect(snap.windows).toBeUndefined()
+    expect(snap.quota_windows).toBeUndefined()
   })
 
   it('respects manual plan override', () => {

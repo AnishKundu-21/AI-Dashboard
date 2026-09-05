@@ -1,4 +1,4 @@
-import type { ProviderId } from '../../shared/providers'
+import { providerMeta, type ProviderId } from '../../shared/providers'
 import type { ProjectionCard, QuotaSnapshot } from '../../shared/types'
 
 export interface DailyTokens {
@@ -164,7 +164,5 @@ function formatTokensShort(n: number): string {
 }
 
 export function providerLabel(id: ProviderId): string {
-  if (id === 'grok') return 'Grok'
-  if (id === 'claude') return 'Claude'
-  return 'Codex'
+  return providerMeta(id).short
 }

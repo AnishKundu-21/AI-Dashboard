@@ -1,6 +1,8 @@
 # AI Usage Dashboard — Electron app
 
-Local-first desktop app for **Grok Build**, **Claude Code**, and **Codex CLI** usage and remaining quota.
+Local-first desktop app for **Grok Build**, **Claude Code**, **Codex CLI**,
+**Cursor CLI**, and **OpenCode** usage. Subscription quota is shown for the
+providers that expose it.
 
 See the repo root [`README.md`](../README.md) and [`PLAN.md`](../PLAN.md) for product context.
 
@@ -10,6 +12,7 @@ See the repo root [`README.md`](../README.md) and [`PLAN.md`](../PLAN.md) for pr
 - npm
 - Windows: **Visual Studio Build Tools** (C++ workload) for `better-sqlite3`
 - For live quota: logged-in Grok Build / Codex / Claude Code CLIs
+- For local usage: Cursor CLI and/or OpenCode data stores when those providers are enabled
 
 ## Scripts
 
@@ -76,15 +79,16 @@ Usage is now parsed into a canonical four-class token model
   with the same TTL-and-snapshot pattern. With no rate available, amounts are
   shown in USD rather than converted at a stale hardcoded rate.
 
-- Live collectors (Grok / Codex / Claude discovery) from Phase 2
+- Live collectors (Grok / Codex / Claude / Cursor / OpenCode discovery)
 - Overview with cost-by-provider + avg daily tokens
-- Daily chart legends · burn history from snapshots + 3-day projection
-- Model mix donut · session search · richer CSV/JSON export (save dialog)
+- Analytics with selectable multi-series line/area graphs for daily provider usage and ranked provider/model comparisons, plus full detail tables
+- Forecast uses aggregate weekly allowance windows and can overlay every provider/model-specific weekly quota stream in one burn graph
 - Forecasts with days-to-empty + recommendations
-- Settings: currency (FX), locale, notify, network quota, per-provider plan auto/manual
+- Settings: currency (FX), locale, notify, network quota, and plan labels for every provider (auto-detected where available, manual everywhere)
+- Provider selector: disable local collection and dashboard display per provider without deleting history
 - Empty databases stay empty: production never inserts sample sessions or fake live quota
 - Real-time CLI filesystem watchers push local changes in under a second; remote quota falls back to 15-second focused polling
-- Provider-neutral token detail for Grok, Codex, and Claude: input, output, cached, reasoning (when emitted), model calls, provider-reported cost, and API duration
+- Provider-neutral analytics across Grok, Codex, Claude, Cursor, and OpenCode: uncached input, cache reads, cache writes, output, reasoning (when emitted), model calls, sessions, provider-reported cost, API-equivalent cost, cache savings, and unpriced-call coverage, broken down by day, provider, and model
 - Today / 3 / 5 / 7 / 30 / 180 / 365 day and lifetime views, with timezone-aware day boundaries
 - Clickable chart/model drill-down, session sorting, bounded pagination, and collector health/rescan controls
 - Sandboxed preload, trusted-sender IPC checks, branded Windows icon, NSIS installer, and optional HTTPS auto-update feed
@@ -133,6 +137,10 @@ Usage is now parsed into a canonical four-class token model
   and its `reasoning` count sits beside `output` rather than inside it, so it
   is folded in to keep the canonical invariant. Priced independently, our
   figure matched OpenCode's own recorded cost on this machine.
+- **Cursor CLI is supported** through its local Agent transcript JSONL files.
+  The collector accepts the provider-native and hook/headless token shapes,
+  stores usage metadata only, and reports subscription quota as unsupported
+  because Cursor does not expose it through the local transcript surface.
 - **Model normalisation is open too.** The three original providers keep their
   family patterns; anything else accepts a plausible model id and lets the rate
   table decide whether it is priceable, rather than relabelling real usage as
