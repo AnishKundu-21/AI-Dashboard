@@ -1,8 +1,16 @@
 import { z } from 'zod'
-import { PROVIDER_IDS } from './providers'
 import { TokenTotalsSchema } from './tokens'
 
-export const ProviderIdSchema = z.enum(PROVIDER_IDS)
+/**
+ * Provider ids are validated by shape, not against a fixed list: a database or
+ * export written by a build that knew about a provider must stay loadable by
+ * one that does not.
+ */
+export const ProviderIdSchema = z
+  .string()
+  .min(1)
+  .max(32)
+  .regex(/^[a-z0-9_-]+$/, 'provider ids are lowercase slugs')
 export type ProviderId = z.infer<typeof ProviderIdSchema>
 
 /** Zero represents the complete locally retained history. */

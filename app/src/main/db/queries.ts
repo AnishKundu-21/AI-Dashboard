@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { PROVIDER_IDS, type ProviderId } from '../../shared/providers'
+import { providerIds, providerMeta, type ProviderId } from '../../shared/providers'
 import type {
   AlertRow,
   AppSettings,
@@ -118,7 +118,7 @@ export function getLatestQuotas(db: Database.Database): QuotaSnapshot[] {
   }
 
   // Ensure all three providers appear (not connected placeholders)
-  return PROVIDER_IDS.map((id) => {
+  return providerIds().map((id) => {
     const existing = byProvider.get(id)
     if (existing) return existing
     return {
@@ -282,7 +282,7 @@ export function getDailyUsage(
   const grouped = new Map<string, DailyUsagePoint & { sessions: Set<string> }>()
   for (const row of rows) {
     const day = dayOf(row.ts_ms)
-    const key = `${day} ${row.provider}`
+    const key = `${day}\u0000${row.provider}`
     let current = grouped.get(key)
     if (!current) {
       current = {
@@ -380,9 +380,11 @@ export function getCollectorHealth(db: Database.Database): CollectorHealth[] {
     Omit<CollectorHealth, 'source_label'>
   >
   const byProvider = new Map(rows.map((row) => [row.provider, row]))
-  return PROVIDER_IDS.map((provider) => ({
+  return providerIds().map((provider) => ({
     provider,
-    source_label: `~/.${provider === 'grok' ? 'grok' : provider}`,
+    // From the provider's manifest, so a newly registered provider needs no
+    // change here.
+    source_label: providerMeta(provider).homeLabel,
     watcher_status: 'missing',
     last_scan_at: null,
     last_success_at: null,

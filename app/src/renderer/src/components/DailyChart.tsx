@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { DailyUsagePoint } from '@shared/types'
-import { PROVIDER_META, PROVIDER_IDS, type ProviderId } from '@shared/providers'
+import { providerMeta, providerIds, type ProviderId } from '@shared/providers'
 import { barPath, compact, niceMax, tickValues, shortDay, weekdayLabel } from '../lib/chart'
 import { useChartHover, useElementWidth, usePrefersReducedMotion } from '../lib/hooks'
 import { formatCurrency } from '../lib/format'
@@ -46,7 +46,7 @@ export function DailyChart({
     const read = (d: DailyUsagePoint) =>
       metric === 'cost' ? d.api_equiv_usd : metric === 'sessions' ? d.session_count : d.tokens_total
     const dayList = Array.from(new Set(data.map((d) => d.day))).sort()
-    const present = PROVIDER_IDS.filter((p) => data.some((d) => d.provider === p))
+    const present = providerIds().filter((p) => data.some((d) => d.provider === p))
     const map = new Map<string, number>()
     for (const d of data) {
       map.set(`${d.day}:${d.provider}`, (map.get(`${d.day}:${d.provider}`) ?? 0) + read(d))
@@ -106,8 +106,8 @@ export function DailyChart({
                 })
               }
             >
-              <i style={{ background: PROVIDER_META[p].color }} />
-              {PROVIDER_META[p].short}
+              <i style={{ background: providerMeta(p).color }} />
+              {providerMeta(p).short}
             </button>
           )
         })}
@@ -163,7 +163,7 @@ export function DailyChart({
                       key={p}
                       className={`chart-bar${dim ? ' dim' : ''}`}
                       d={barPath(xFor(di) - barW / 2, yTop, barW, Math.max(h, 1), isTop ? radius : 0)}
-                      fill={PROVIDER_META[p].color}
+                      fill={providerMeta(p).color}
                       style={
                         reduced ? { animation: 'none' } : { animationDelay: `${Math.min(di * 10, 260)}ms` }
                       }
@@ -204,8 +204,8 @@ export function DailyChart({
               if (v <= 0) return null
               return (
                 <div className="tt-row" key={p}>
-                  <i style={{ background: PROVIDER_META[p].color }} />
-                  {PROVIDER_META[p].short}
+                  <i style={{ background: providerMeta(p).color }} />
+                  {providerMeta(p).short}
                   <b>{fmt(v)}</b>
                 </div>
               )

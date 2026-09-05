@@ -1,5 +1,5 @@
 import type { ProjectionCard as ProjectionCardData, QuotaSnapshot } from '@shared/types'
-import { PROVIDER_META } from '@shared/providers'
+import { providerMeta } from '@shared/providers'
 import { confidenceBadge } from '../lib/format'
 import { IconSpark } from './Icons'
 
@@ -9,7 +9,7 @@ interface Props {
 }
 
 export function ProjectionCard({ projection: p, quota }: Props) {
-  const meta = PROVIDER_META[p.provider]
+  const meta = providerMeta(p.provider)
   const badge = quota
     ? confidenceBadge(quota.confidence, quota.auth_connected, quota.stale)
     : { label: 'No snapshot', className: 'plain' }

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { ModelMixItem } from '@shared/types'
-import { PROVIDER_META } from '@shared/providers'
+import { providerMeta } from '@shared/providers'
 import { arcPath, compact } from '../lib/chart'
 
 interface Props {
@@ -28,8 +28,8 @@ export function ModelDonut({ models, selectedModel, onSelectModel }: Props) {
     const items = head.map((m) => ({
       key: m.model,
       label: m.model,
-      sub: PROVIDER_META[m.provider]?.short ?? m.provider,
-      color: PROVIDER_META[m.provider]?.color ?? 'var(--text-3)',
+      sub: providerMeta(m.provider)?.short ?? m.provider,
+      color: providerMeta(m.provider)?.color ?? 'var(--text-3)',
       value: m.tokens_total,
       selectable: true
     }))

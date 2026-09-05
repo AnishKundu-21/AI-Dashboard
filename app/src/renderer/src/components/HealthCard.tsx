@@ -1,5 +1,5 @@
 import type { CollectorHealth, ProviderId } from '@shared/types'
-import { PROVIDER_META } from '@shared/providers'
+import { providerMeta } from '@shared/providers'
 import { relativeTime } from '../lib/format'
 import { IconRefresh } from './Icons'
 
@@ -17,7 +17,7 @@ interface Props {
 }
 
 export function HealthCard({ health, busy, onRescan }: Props) {
-  const meta = PROVIDER_META[health.provider]
+  const meta = providerMeta(health.provider)
 
   return (
     <article className="panel health-card">

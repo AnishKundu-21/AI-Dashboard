@@ -23,3 +23,20 @@ describe('normalizeModelName', () => {
     ).toBe('gpt-5.6-codex')
   })
 })
+
+describe('providers beyond the original three', () => {
+  it('accepts a routed model id rather than relabelling it Unknown', () => {
+    // OpenCode routes many upstreams; there is no family pattern to match on.
+    expect(normalizeModelName('opencode', 'xai/grok-4.3')).toBe('grok-4.3')
+    expect(normalizeModelName('opencode', 'github-copilot/claude-sonnet-4.5')).toBe(
+      'claude-sonnet-4.5'
+    )
+    expect(normalizeModelName('opencode', 'gpt-5.6-sol')).toBe('gpt-5.6-sol')
+  })
+
+  it('still rejects UI placeholders that are not models', () => {
+    expect(normalizeModelName('opencode', 'auto')).toBeNull()
+    expect(normalizeModelName('opencode', 'unknown')).toBeNull()
+    expect(normalizeModelName('opencode', '')).toBeNull()
+  })
+})

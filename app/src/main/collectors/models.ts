@@ -35,7 +35,16 @@ export function normalizeModelName(
     value = value.toLowerCase()
   } else if (provider === 'grok') {
     if (!/^grok(?:[- ][a-z0-9._-]+)?$/i.test(value)) return null
-  } else if (!/^(?:claude[- ]?)?(?:opus|sonnet|haiku)(?:[- ][a-z0-9._-]+)?$/i.test(value)) {
+  } else if (provider === 'claude') {
+    if (!/^(?:claude[- ]?)?(?:opus|sonnet|haiku)(?:[- ][a-z0-9._-]+)?$/i.test(value)) {
+      return null
+    }
+  } else if (!/^[a-z0-9][a-z0-9._-]*$/i.test(value)) {
+    // Providers added after these three route models from many upstreams —
+    // OpenCode alone yields xai/grok-4.3 and github-copilot/claude-sonnet-4.5 —
+    // so there is no family pattern to match. Accept anything that looks like
+    // a model id and let the rate table decide whether it is priceable, rather
+    // than silently relabelling real usage as Unknown.
     return null
   }
 

@@ -17,6 +17,7 @@ import { existsSync } from 'fs'
 import { collectClaudeSessions } from '../src/main/collectors/claude/sessions'
 import { collectCodexSessions } from '../src/main/collectors/codex/sessions'
 import { collectGrokSessions } from '../src/main/collectors/grok/sessions'
+import { collectOpenCodeSessions } from '../src/main/collectors/opencode/sessions'
 import { primeRateTable, rateForModel, resetPricingForTests } from '../src/main/pricing/store'
 import { RATES_URL } from '../src/main/pricing/store'
 import type { ScanCache } from '../src/main/collectors/scanCache'
@@ -98,7 +99,8 @@ describe('real-data verification', () => {
       const homes = {
         claude: join(homedir(), '.claude'),
         codex: join(homedir(), '.codex'),
-        grok: join(homedir(), '.grok')
+        grok: join(homedir(), '.grok'),
+        opencode: join(homedir(), '.local', 'share', 'opencode')
       }
 
       const cache: ScanCache = new Map()
@@ -150,6 +152,16 @@ describe('real-data verification', () => {
         console.log(`\ngrok cold scan: ${Date.now() - t0}ms`)
         summarise('GROK', rows)
         all.push(...rows)
+      }
+
+      if (existsSync(homes.opencode)) {
+        const t0 = Date.now()
+        const collected = collectOpenCodeSessions(homes.opencode)
+        console.log(`
+opencode scan: ${Date.now() - t0}ms`)
+        summarise('OPENCODE', collected.sessions)
+        all.push(...collected.sessions)
+        allEvents.push(...collected.events)
       }
 
       summarise('ALL PROVIDERS', all)

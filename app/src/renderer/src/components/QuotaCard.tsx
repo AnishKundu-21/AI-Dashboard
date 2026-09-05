@@ -1,10 +1,10 @@
 import type { QuotaSnapshot } from '@shared/types'
-import { PROVIDER_META } from '@shared/providers'
+import { providerMeta } from '@shared/providers'
 import { confidenceBadge, relativeTime } from '../lib/format'
 import { Gauge } from './Gauge'
 
 export function QuotaCard({ quota }: { quota: QuotaSnapshot }) {
-  const meta = PROVIDER_META[quota.provider]
+  const meta = providerMeta(quota.provider)
   const badge = confidenceBadge(quota.confidence, quota.auth_connected, quota.stale)
   const used = quota.used_pct
   const connected = quota.auth_connected

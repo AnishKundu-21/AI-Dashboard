@@ -117,6 +117,30 @@ Usage is now parsed into a canonical four-class token model
   API-key account cannot have subscription windows, so it replaces a previous
   live value instead of being retried as a transient failure.
 
+### Phase C — open provider registry
+
+- **Providers are runtime-registered manifests**, not a closed `as const` union
+  threaded through zod, SQL and the UI. Adding one is a manifest plus a
+  collector; provider ids are validated by shape so a database or export
+  written by a build that knew about a provider stays loadable by one that
+  does not, and an unknown id renders with neutral metadata instead of
+  crashing on a missing lookup.
+- **OpenCode is supported**, as the proof that the registry is genuinely open.
+  Usage comes from its SQLite store, one event per assistant message, reading
+  only the `message` row's usage blob — prompt and response text live in the
+  separate `part` table and are never touched. Two provider-specific facts are
+  handled: its `input` count excludes the cached half (unlike Codex and Grok),
+  and its `reasoning` count sits beside `output` rather than inside it, so it
+  is folded in to keep the canonical invariant. Priced independently, our
+  figure matched OpenCode's own recorded cost on this machine.
+- **Model normalisation is open too.** The three original providers keep their
+  family patterns; anything else accepts a plausible model id and lets the rate
+  table decide whether it is priceable, rather than relabelling real usage as
+  Unknown.
+- OpenCode reports `unsupported` for quota rather than a perpetual "unknown":
+  it bills per call through the user's own provider keys, so there is no
+  subscription window to show.
+
 ## Release configuration
 
 - Set `AI_USAGE_UPDATE_URL` to an HTTPS generic electron-builder update feed to enable update checks in packaged builds.

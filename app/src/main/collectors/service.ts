@@ -435,7 +435,8 @@ function rememberDetectedPlan(snap: QuotaSnapshot): void {
         mode: current?.mode ?? 'auto',
         value: current?.value,
         detected: snap.plan_label,
-        source: snap.plan_source
+        // PlanConfig omits an unknown source rather than storing null.
+        source: snap.plan_source ?? undefined
       }
     }
   })

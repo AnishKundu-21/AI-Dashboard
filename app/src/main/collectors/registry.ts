@@ -3,6 +3,7 @@ import type { ProviderId } from '../../shared/providers'
 import { grokAdapter } from './grok'
 import { codexAdapter } from './codex'
 import { claudeAdapter } from './claude'
+import { openCodeAdapter } from './opencode'
 
 const adapters = new Map<ProviderId, ProviderAdapter>()
 
@@ -10,6 +11,7 @@ export function registerDefaultAdapters(): void {
   registerAdapter(grokAdapter)
   registerAdapter(codexAdapter)
   registerAdapter(claudeAdapter)
+  registerAdapter(openCodeAdapter)
 }
 
 export function registerAdapter(adapter: ProviderAdapter): void {

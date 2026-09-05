@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ProviderId, RangeDays } from '@shared/types'
-import { PROVIDER_META, PROVIDER_IDS } from '@shared/providers'
+import { providerMeta, providerIds } from '@shared/providers'
 import { Segmented, type SegmentedOption } from './Segmented'
 import {
   IconChevronDown,
@@ -70,10 +70,10 @@ export function TopBar({
 
   const options: SegmentedOption<ProviderTab>[] = [
     { value: 'all', label: 'All' },
-    ...PROVIDER_IDS.map((p) => ({
+    ...providerIds().map((p) => ({
       value: p as ProviderTab,
-      label: PROVIDER_META[p].short,
-      color: PROVIDER_META[p].color
+      label: providerMeta(p).short,
+      color: providerMeta(p).color
     }))
   ]
 

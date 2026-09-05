@@ -1,5 +1,5 @@
 import type { AppSettings, ProviderId } from '@shared/types'
-import { PROVIDER_META, PROVIDER_IDS } from '@shared/providers'
+import { providerMeta, providerIds } from '@shared/providers'
 import { CURRENCY_OPTIONS, LOCALE_OPTIONS, availableCurrencies, hasFxRates } from '../lib/format'
 
 const PLAN_PRESETS: Record<ProviderId, string[]> = {
@@ -196,7 +196,7 @@ export function SettingsPanel({ settings, onChange }: Props) {
         </div>
         <div className="card-body">
           <div className="grid grid-3">
-            {PROVIDER_IDS.map((id) => {
+            {providerIds().map((id) => {
               const cfg = settings.plans[id] ?? { mode: 'auto' as const }
               const presets = PLAN_PRESETS[id]
               const presetValues = presets.filter((v) => v !== 'Custom')
@@ -204,9 +204,9 @@ export function SettingsPanel({ settings, onChange }: Props) {
               return (
                 <div key={id} className="plan-card">
                   <header>
-                    <i className="swatch" style={{ background: PROVIDER_META[id].color }} />
+                    <i className="swatch" style={{ background: providerMeta(id).color }} />
                     <div>
-                      <h4>{PROVIDER_META[id].name}</h4>
+                      <h4>{providerMeta(id).name}</h4>
                       <p>
                         {cfg.detected ? `Detected: ${cfg.detected}` : 'No detection yet'}
                         {cfg.mode === 'manual' && cfg.value ? ` · showing ${cfg.value}` : ''}

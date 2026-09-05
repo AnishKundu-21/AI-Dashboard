@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { BurnPoint } from '@shared/types'
-import { PROVIDER_META, type ProviderId } from '@shared/providers'
+import { providerMeta, type ProviderId } from '@shared/providers'
 import { areaPath, pathLength, smoothPath, weekdayLabel, shortDay, type Pt } from '../lib/chart'
 import { useChartHover, useElementWidth, usePrefersReducedMotion } from '../lib/hooks'
 
@@ -21,7 +21,7 @@ function padsFor(width: number) {
 export function BurnChart({ data, provider }: Props) {
   const reduced = usePrefersReducedMotion()
   const [wrapRef, wrapWidth] = useElementWidth<HTMLDivElement>(620)
-  const tone = PROVIDER_META[provider].color
+  const tone = providerMeta(provider).color
 
   const W = Math.max(240, Math.round(wrapWidth))
   const PAD = padsFor(W)

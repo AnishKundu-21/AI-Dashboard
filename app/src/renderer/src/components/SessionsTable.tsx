@@ -1,5 +1,5 @@
 import type { SessionRow } from '@shared/types'
-import { PROVIDER_META } from '@shared/providers'
+import { providerMeta } from '@shared/providers'
 import { formatCurrency, formatDuration, formatTokens, relativeTime } from '../lib/format'
 
 export type SessionSort = 'started_at' | 'tokens_total' | 'api_equiv_usd' | 'duration_ms'
@@ -61,8 +61,8 @@ export function SessionsTable({ sessions, currency, locale, sort, onSort }: Prop
             <tr key={s.id}>
               <td>
                 <span className="cell-provider">
-                  <i className="swatch" style={{ background: PROVIDER_META[s.provider].color }} />
-                  {PROVIDER_META[s.provider].short}
+                  <i className="swatch" style={{ background: providerMeta(s.provider).color }} />
+                  {providerMeta(s.provider).short}
                 </span>
               </td>
               <td>

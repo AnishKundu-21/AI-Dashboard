@@ -37,3 +37,11 @@ export function getCodexHome(): string {
 export function getClaudeHome(): string {
   return process.env.CLAUDE_HOME || join(homedir(), '.claude')
 }
+
+/** OpenCode keeps its SQLite store under the XDG data dir on every platform. */
+export function getOpenCodeHome(): string {
+  return (
+    process.env.OPENCODE_HOME ||
+    join(homedir(), '.local', 'share', 'opencode')
+  )
+}

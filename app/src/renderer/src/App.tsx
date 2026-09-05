@@ -13,7 +13,7 @@ import type {
   RangeDays,
   SessionRow
 } from '@shared/types'
-import { PROVIDER_META, PROVIDER_IDS } from '@shared/providers'
+import { providerMeta, providerIds } from '@shared/providers'
 import { QuotaCard } from './components/QuotaCard'
 import { DailyChart, type DailyMetric } from './components/DailyChart'
 import { BurnChart } from './components/BurnChart'
@@ -126,7 +126,7 @@ export default function App() {
         window.api.getQuotas(),
         window.api.getDailyUsage(base),
         Promise.all(
-          PROVIDER_IDS.map((id) => window.api.getBurn({ provider: id, range_days: rangeDays }))
+          providerIds().map((id) => window.api.getBurn({ provider: id, range_days: rangeDays }))
         ),
         window.api.getModelMix(base),
         window.api.getSessions({
@@ -287,7 +287,7 @@ export default function App() {
     setRescanning(id)
     try {
       const result = await window.api.rescanProvider({ provider: id })
-      pushToast(`${PROVIDER_META[id].short}: ${result.upserted} sessions scanned`)
+      pushToast(`${providerMeta(id).short}: ${result.upserted} sessions scanned`)
       await load()
     } catch (e) {
       pushToast(e instanceof Error ? e.message : 'Rescan failed', 'err')
@@ -374,13 +374,13 @@ export default function App() {
         <div className="context-item" style={{ marginLeft: 'auto' }}>
           <span>Live quota</span>
           <div className="context-providers">
-            {PROVIDER_IDS.map((id) => {
+            {providerIds().map((id) => {
               const q = quotas.find((x) => x.provider === id)
               const live = q?.confidence === 'live' && !q.stale
               return (
                 <span key={id} className={`context-provider${live ? '' : ' off'}`}>
-                  <i className="swatch" style={{ background: PROVIDER_META[id].color }} />
-                  {PROVIDER_META[id].short}
+                  <i className="swatch" style={{ background: providerMeta(id).color }} />
+                  {providerMeta(id).short}
                   <b>
                     {q?.remaining_pct != null ? `${Math.round(q.remaining_pct)}%` : '—'}
                   </b>
@@ -533,9 +533,9 @@ export default function App() {
               aria-label="Burn chart provider"
               onChange={(e) => setBurnProvider(e.target.value as ProviderId)}
             >
-              {PROVIDER_IDS.map((id) => (
+              {providerIds().map((id) => (
                 <option key={id} value={id}>
-                  {PROVIDER_META[id].name}
+                  {providerMeta(id).name}
                 </option>
               ))}
             </select>
@@ -695,9 +695,9 @@ export default function App() {
             aria-label="Burn chart provider"
             onChange={(e) => setBurnProvider(e.target.value as ProviderId)}
           >
-            {PROVIDER_IDS.map((id) => (
+            {providerIds().map((id) => (
               <option key={id} value={id}>
-                {PROVIDER_META[id].name}
+                {providerMeta(id).name}
               </option>
             ))}
           </select>
@@ -855,10 +855,10 @@ function QuotaMeters({ quotas }: { quotas: QuotaSnapshot[] }) {
         <div
           key={q.provider}
           className="compare-row"
-          style={{ ['--tone' as string]: PROVIDER_META[q.provider].color, height: 14, gridTemplateColumns: '52px 1fr 34px' }}
+          style={{ ['--tone' as string]: providerMeta(q.provider).color, height: 14, gridTemplateColumns: '52px 1fr 34px' }}
         >
           <span className="label" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-            {PROVIDER_META[q.provider].short}
+            {providerMeta(q.provider).short}
           </span>
           <div className="meter">
             <i style={{ width: `${Math.min(100, q.used_pct ?? 0)}%` }} />
@@ -924,11 +924,11 @@ function Comparison({
               <div
                 className="compare-row"
                 key={r.provider}
-                style={{ ['--tone' as string]: PROVIDER_META[r.provider].color }}
+                style={{ ['--tone' as string]: providerMeta(r.provider).color }}
               >
                 <span className="label">
-                  <i className="swatch" style={{ background: PROVIDER_META[r.provider].color }} />
-                  {PROVIDER_META[r.provider].name}
+                  <i className="swatch" style={{ background: providerMeta(r.provider).color }} />
+                  {providerMeta(r.provider).name}
                 </span>
                 <div className="meter">
                   <i
