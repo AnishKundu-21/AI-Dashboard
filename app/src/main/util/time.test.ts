@@ -4,6 +4,7 @@ import {
   enumerateDays,
   makeDayFormatter,
   rangeStartMs,
+  resolveAnalyticsPeriod,
   resolveTimeZone,
   startOfDayMs
 } from './time'
@@ -70,6 +71,12 @@ describe('rangeStartMs', () => {
       Date.parse('2026-07-03T18:30:00Z')
     )
   })
+
+  it('uses calendar days rather than fixed 24-hour blocks across spring DST', () => {
+    expect(
+      rangeStartMs(3, 'America/New_York', Date.parse('2026-03-09T16:00:00.000Z'))
+    ).toBe(Date.parse('2026-03-07T05:00:00.000Z'))
+  })
 })
 
 describe('resolveTimeZone', () => {
@@ -93,5 +100,56 @@ describe('enumerateDays', () => {
 
   it('returns a single day when the range is one day', () => {
     expect(enumerateDays('2026-03-01', '2026-03-01')).toEqual(['2026-03-01'])
+  })
+})
+
+describe('resolveAnalyticsPeriod', () => {
+  it('uses equal-length, adjacent calendar windows for a preset', () => {
+    const period = resolveAnalyticsPeriod(
+      { range_days: 3 },
+      'UTC',
+      Date.parse('2026-09-06T10:00:00.000Z')
+    )
+    expect(period.current).toMatchObject({
+      startDay: '2026-09-04',
+      endDay: '2026-09-06',
+      startMs: Date.parse('2026-09-04T00:00:00.000Z'),
+      endMs: Date.parse('2026-09-07T00:00:00.000Z'),
+      days: 3
+    })
+    expect(period.previous).toMatchObject({
+      startDay: '2026-09-01',
+      endDay: '2026-09-03',
+      startMs: Date.parse('2026-09-01T00:00:00.000Z'),
+      endMs: Date.parse('2026-09-04T00:00:00.000Z'),
+      days: 3
+    })
+  })
+
+  it('keeps custom ranges inclusive across a daylight-saving transition', () => {
+    const period = resolveAnalyticsPeriod(
+      { range_days: 7, start_day: '2026-03-07', end_day: '2026-03-09' },
+      'America/New_York'
+    )
+    expect(period.current).toMatchObject({
+      startDay: '2026-03-07',
+      endDay: '2026-03-09',
+      startMs: Date.parse('2026-03-07T05:00:00.000Z'),
+      endMs: Date.parse('2026-03-10T04:00:00.000Z'),
+      days: 3
+    })
+    expect(period.previous).toMatchObject({
+      startDay: '2026-03-04',
+      endDay: '2026-03-06',
+      endMs: Date.parse('2026-03-07T05:00:00.000Z'),
+      days: 3
+    })
+  })
+
+  it('does not invent a comparison for lifetime history', () => {
+    expect(resolveAnalyticsPeriod({ range_days: 0 }, 'UTC')).toEqual({
+      current: { startDay: null, endDay: null, startMs: null, endMs: null, days: null },
+      previous: null
+    })
   })
 })

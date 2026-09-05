@@ -3,6 +3,7 @@ import { writeFileSync } from 'fs'
 import {
   AlertsDismissInput,
   ExportInput,
+  GetAnalyticsSnapshotInput,
   GetBurnInput,
   GetBurnSeriesInput,
   GetOverviewInput,
@@ -18,6 +19,7 @@ import {
   exportAsJson,
   getBurn,
   getBurnSeries,
+  getAnalyticsSnapshot,
   getCollectorHealth,
   getDailyUsage,
   getLatestQuotas,
@@ -58,6 +60,11 @@ export function registerIpcHandlers(): void {
   secureHandle(IPC.getBurn, (_e, raw) => {
     const input = GetBurnInput.parse(raw)
     return getBurn(getDb(), input.provider, input.range_days)
+  })
+
+  secureHandle(IPC.getAnalyticsSnapshot, (_e, raw) => {
+    const input = GetAnalyticsSnapshotInput.parse(raw ?? {})
+    return getAnalyticsSnapshot(getDb(), input)
   })
 
   secureHandle(IPC.getBurnSeries, (_e, raw) => {

@@ -3,6 +3,7 @@ import type { DashboardApi } from '../shared/ipc'
 import {
   AlertsDismissInput,
   ExportInput,
+  GetAnalyticsSnapshotInput,
   GetBurnInput,
   GetBurnSeriesInput,
   GetOverviewInput,
@@ -15,6 +16,11 @@ import {
 const api: DashboardApi = {
   getOverview: (input) =>
     ipcRenderer.invoke(IPC.getOverview, GetOverviewInput.parse(input ?? {})),
+  getAnalyticsSnapshot: (input) =>
+    ipcRenderer.invoke(
+      IPC.getAnalyticsSnapshot,
+      GetAnalyticsSnapshotInput.parse(input ?? {})
+    ),
   getQuotas: () => ipcRenderer.invoke(IPC.getQuotas),
   getDailyUsage: (input) =>
     ipcRenderer.invoke(IPC.getDailyUsage, GetOverviewInput.parse(input ?? {})),

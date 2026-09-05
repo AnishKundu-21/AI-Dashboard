@@ -1,9 +1,10 @@
 import { DatabaseSync } from 'node:sqlite'
 import type Database from 'better-sqlite3'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   applyBurnWindow,
   applyClaudeBurnWindow,
+  getAnalyticsSnapshot,
   getBurn,
   getBurnSeries,
   getDailyUsage,
@@ -243,6 +244,108 @@ describe('usage analytics detail', () => {
     expect(
       getSessions(db, 'claude', 0, undefined, { model: 'claude-sonnet-4-5' })
     ).toHaveLength(1)
+    raw.close()
+  })
+})
+
+describe('analytics period comparison', () => {
+  it('keeps the displayed overview and comparison snapshot on the same DST-aware window', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-09T16:00:00.000Z'))
+    try {
+      const raw = new DatabaseSync(':memory:')
+      raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+      for (const migration of MIGRATIONS) raw.exec(migration.sql)
+      const db = raw as unknown as Database.Database
+      setSettings(db, { timezone: 'America/New_York' })
+      const insert = raw.prepare(`
+        INSERT INTO usage_events (
+          dedupe_key, provider, session_id, project, model, ts_ms,
+          uncached_input, cached_input, cache_creation, output, reasoning,
+          cost_usd, cache_savings_usd, reported_cost_usd, source
+        ) VALUES (?, 'claude', ?, 'project', 'test-model', ?, ?, 0, 0, 0, 0, 0, 0, NULL, 'test')
+      `)
+      // Last three New York calendar dates are Mar 7–9, even though Mar 8
+      // is a 23-hour day. The Mar 6 event must remain outside the window.
+      insert.run('outside-dst', 'outside-dst', Date.parse('2026-03-06T18:00:00.000Z'), 500)
+      insert.run('inside-dst', 'inside-dst', Date.parse('2026-03-08T18:00:00.000Z'), 200)
+
+      const overview = getOverview(db, 'claude', 3)
+      const snapshot = getAnalyticsSnapshot(db, { provider: 'claude', range_days: 3 })
+      expect(overview.tokens_total).toBe(200)
+      expect(snapshot.current.tokens_total).toBe(overview.tokens_total)
+      raw.close()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('compares an exact custom window with the immediately preceding equal-length window', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+    setSettings(db, { timezone: 'UTC' })
+    const insert = raw.prepare(`
+      INSERT INTO usage_events (
+        dedupe_key, provider, session_id, project, model, ts_ms,
+        uncached_input, cached_input, cache_creation, output, reasoning,
+        cost_usd, cache_savings_usd, reported_cost_usd, source
+      ) VALUES (?, 'claude', ?, 'project', 'test-model', ?, ?, 0, 0, 0, 0, ?, 0, NULL, 'test')
+    `)
+
+    // Sep 2–4 is the selected window; Aug 30–Sep 1 is the exact prior window.
+    insert.run('prior', 'prior-session', Date.parse('2026-08-31T12:00:00.000Z'), 50, 0.5)
+    insert.run('current-a', 'current-session', Date.parse('2026-09-02T12:00:00.000Z'), 100, 1)
+    insert.run('current-b', 'current-session', Date.parse('2026-09-04T12:00:00.000Z'), 100, null)
+    // The exclusive boundary must keep this future event out of both windows.
+    insert.run('outside', 'outside-session', Date.parse('2026-09-05T00:00:00.000Z'), 500, 5)
+
+    const snapshot = getAnalyticsSnapshot(
+      db,
+      {
+        provider: 'claude',
+        range_days: 7,
+        start_day: '2026-09-02',
+        end_day: '2026-09-04'
+      },
+      Date.parse('2026-09-06T10:00:00.000Z')
+    )
+
+    expect(snapshot.window).toMatchObject({
+      start_day: '2026-09-02',
+      end_day: '2026-09-04',
+      days: 3,
+      timezone: 'UTC'
+    })
+    expect(snapshot.current).toMatchObject({
+      tokens_total: 200,
+      api_equiv_usd: 1,
+      session_count: 1,
+      unpriced_sessions: 1,
+      token_breakdown: { model_calls: 2, uncached_input: 200 }
+    })
+    expect(snapshot.previous).toMatchObject({
+      window: { start_day: '2026-08-30', end_day: '2026-09-01', days: 3 },
+      totals: {
+        tokens_total: 50,
+        api_equiv_usd: 0.5,
+        session_count: 1,
+        token_breakdown: { model_calls: 1 }
+      }
+    })
+    raw.close()
+  })
+
+  it('does not fabricate a prior period for lifetime analytics', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+
+    const snapshot = getAnalyticsSnapshot(db, { provider: 'all', range_days: 0 })
+    expect(snapshot.window.label).toBe('Lifetime')
+    expect(snapshot.previous).toBeNull()
     raw.close()
   })
 })

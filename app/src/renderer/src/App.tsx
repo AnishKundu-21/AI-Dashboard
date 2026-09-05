@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AlertRow,
+  AnalyticsSnapshot,
   AppSettings,
   BurnSeries,
   CollectorHealth,
@@ -79,6 +80,7 @@ export default function App() {
 
   // Data ------------------------------------------------------------------
   const [overview, setOverview] = useState<OverviewMetrics | null>(null)
+  const [analyticsSnapshot, setAnalyticsSnapshot] = useState<AnalyticsSnapshot | null>(null)
   const [quotas, setQuotas] = useState<QuotaSnapshot[]>([])
   const [daily, setDaily] = useState<DailyUsagePoint[]>([])
   const [burnSeries, setBurnSeries] = useState<BurnSeries[]>([])
@@ -163,12 +165,21 @@ export default function App() {
       setSettings(st)
       setCollectorHealth(health)
       setLastSync(new Date().toISOString())
+      if (view === 'analytics') {
+        try {
+          setAnalyticsSnapshot(await window.api.getAnalyticsSnapshot(base))
+        } catch {
+          // The regular dashboard remains useful even if the optional
+          // comparison snapshot cannot be generated on an older database.
+          setAnalyticsSnapshot(null)
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
-  }, [provider, rangeDays, searchDebounced, selectedDay, selectedModel, sessionSort, sessionLimit])
+  }, [provider, rangeDays, searchDebounced, selectedDay, selectedModel, sessionSort, sessionLimit, view])
 
   useEffect(() => {
     void load()
@@ -445,6 +456,12 @@ export default function App() {
     </div>
   ) : null
 
+  const analyticsCurrent = analyticsSnapshot?.current
+  const analyticsPrevious = analyticsSnapshot?.previous?.totals
+  const apiCostHasPartialCoverage =
+    (analyticsCurrent?.unpriced_sessions ?? 0) > 0 ||
+    (analyticsPrevious?.unpriced_sessions ?? 0) > 0
+
   const overviewView = (
     <div className="view">
       <div className="context">
@@ -599,18 +616,28 @@ export default function App() {
     <div className="view">
       {filterBar}
       {overview ? (
-        <div className="analytics-kpis">
-          <AnalyticsKpi label="Total tokens" value={formatTokens(overview.tokens_total)} />
-          <AnalyticsKpi label="Uncached input" value={formatTokens(overview.token_breakdown.uncached_input)} />
-          <AnalyticsKpi label="Cache reads" value={formatTokens(overview.token_breakdown.cached_input)} />
-          <AnalyticsKpi label="Cache writes" value={formatTokens(overview.token_breakdown.cache_creation)} />
-          <AnalyticsKpi label="Cache hit rate" value={formatCacheHitRate(overview.token_breakdown)} note="reads / reusable input" />
-          <AnalyticsKpi label="Output" value={formatTokens(overview.token_breakdown.output)} />
-          <AnalyticsKpi label="Reasoning" value={formatTokens(overview.token_breakdown.reasoning)} note="subset of output" />
-          <AnalyticsKpi label="Model calls" value={overview.token_breakdown.model_calls.toLocaleString(locale)} />
-          <AnalyticsKpi label="API-equivalent" value={formatCurrency(overview.api_equiv_usd, currency, locale)} />
-          <AnalyticsKpi label="Cache savings" value={formatCurrency(overview.cache_savings_usd, currency, locale)} />
-        </div>
+        <>
+          {analyticsSnapshot ? (
+            <p className="analytics-period-note">
+              {analyticsSnapshot.window.label} · {analyticsSnapshot.window.timezone}
+              {analyticsSnapshot.previous
+                ? ` · compared with ${analyticsSnapshot.previous.window.label}`
+                : ' · lifetime has no equivalent prior period'}
+            </p>
+          ) : null}
+          <div className="analytics-kpis">
+            <AnalyticsKpi label="Total tokens" value={formatTokens(analyticsCurrent?.tokens_total ?? overview.tokens_total)} current={analyticsCurrent?.tokens_total} previous={analyticsPrevious?.tokens_total} />
+            <AnalyticsKpi label="Uncached input" value={formatTokens(analyticsCurrent?.token_breakdown.uncached_input ?? overview.token_breakdown.uncached_input)} current={analyticsCurrent?.token_breakdown.uncached_input} previous={analyticsPrevious?.token_breakdown.uncached_input} />
+            <AnalyticsKpi label="Cache reads" value={formatTokens(analyticsCurrent?.token_breakdown.cached_input ?? overview.token_breakdown.cached_input)} current={analyticsCurrent?.token_breakdown.cached_input} previous={analyticsPrevious?.token_breakdown.cached_input} />
+            <AnalyticsKpi label="Cache writes" value={formatTokens(analyticsCurrent?.token_breakdown.cache_creation ?? overview.token_breakdown.cache_creation)} current={analyticsCurrent?.token_breakdown.cache_creation} previous={analyticsPrevious?.token_breakdown.cache_creation} />
+            <AnalyticsKpi label="Cache hit rate" value={formatCacheHitRate(analyticsCurrent?.token_breakdown ?? overview.token_breakdown)} current={cacheHitRate(analyticsCurrent?.token_breakdown ?? overview.token_breakdown)} previous={analyticsPrevious ? cacheHitRate(analyticsPrevious.token_breakdown) : undefined} note="reads / reusable input" />
+            <AnalyticsKpi label="Output" value={formatTokens(analyticsCurrent?.token_breakdown.output ?? overview.token_breakdown.output)} current={analyticsCurrent?.token_breakdown.output} previous={analyticsPrevious?.token_breakdown.output} />
+            <AnalyticsKpi label="Reasoning" value={formatTokens(analyticsCurrent?.token_breakdown.reasoning ?? overview.token_breakdown.reasoning)} current={analyticsCurrent?.token_breakdown.reasoning} previous={analyticsPrevious?.token_breakdown.reasoning} note="subset of output" />
+            <AnalyticsKpi label="Model calls" value={(analyticsCurrent?.token_breakdown.model_calls ?? overview.token_breakdown.model_calls).toLocaleString(locale)} current={analyticsCurrent?.token_breakdown.model_calls} previous={analyticsPrevious?.token_breakdown.model_calls} />
+            <AnalyticsKpi label="API-equivalent" value={formatCurrency(analyticsCurrent?.api_equiv_usd ?? overview.api_equiv_usd, currency, locale)} current={analyticsCurrent?.api_equiv_usd} previous={apiCostHasPartialCoverage ? undefined : analyticsPrevious?.api_equiv_usd} note={apiCostHasPartialCoverage ? 'Partial pricing coverage — comparison withheld' : undefined} />
+            <AnalyticsKpi label="Cache savings" value={formatCurrency(analyticsCurrent?.cache_savings_usd ?? overview.cache_savings_usd, currency, locale)} current={analyticsCurrent?.cache_savings_usd} previous={analyticsPrevious?.cache_savings_usd} />
+          </div>
+        </>
       ) : null}
 
       <article className="panel">
@@ -1057,21 +1084,53 @@ function TokenSplit({ breakdown }: { breakdown: OverviewMetrics['token_breakdown
   )
 }
 
-function AnalyticsKpi({ label, value, note }: { label: string; value: string; note?: string }) {
+function AnalyticsKpi({
+  label,
+  value,
+  current,
+  previous,
+  note
+}: {
+  label: string
+  value: string
+  current?: number
+  previous?: number
+  note?: string
+}) {
+  const trend = periodTrend(current, previous)
   return (
     <article className="analytics-kpi">
       <span>{label}</span>
       <strong>{value}</strong>
+      {trend ? <small className={`analytics-trend ${trend.tone}`}>{trend.text}</small> : null}
       {note ? <small>{note}</small> : null}
     </article>
   )
 }
 
 function formatCacheHitRate(breakdown: OverviewMetrics['token_breakdown']): string {
+  const rate = cacheHitRate(breakdown)
+  return rate == null ? '—' : `${rate.toFixed(1)}%`
+}
+
+function cacheHitRate(breakdown: OverviewMetrics['token_breakdown']): number | undefined {
   const reusableInput = breakdown.uncached_input + breakdown.cached_input
-  return reusableInput > 0
-    ? `${((breakdown.cached_input / reusableInput) * 100).toFixed(1)}%`
-    : '—'
+  return reusableInput > 0 ? (breakdown.cached_input / reusableInput) * 100 : undefined
+}
+
+function periodTrend(
+  current: number | undefined,
+  previous: number | undefined
+): { text: string; tone: 'up' | 'down' | 'flat' } | undefined {
+  if (current == null || previous == null) return undefined
+  const delta = current - previous
+  if (delta === 0) return { text: 'No change vs prior', tone: 'flat' }
+  if (previous === 0) return { text: current > 0 ? 'New vs prior' : 'Lower vs prior', tone: current > 0 ? 'up' : 'down' }
+  const pct = Math.abs((delta / previous) * 100)
+  return {
+    text: `${delta > 0 ? '↑' : '↓'}${pct >= 10 ? Math.round(pct) : pct.toFixed(1)}% vs prior`,
+    tone: delta > 0 ? 'up' : 'down'
+  }
 }
 
 /** Per-provider used-% meters, so the average has context. */

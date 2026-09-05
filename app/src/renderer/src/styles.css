@@ -738,6 +738,12 @@ table,
   background: var(--border);
 }
 
+.analytics-period-note {
+  margin: 0 0 10px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
 .analytics-kpi {
   min-width: 0;
   min-height: 82px;
@@ -767,6 +773,11 @@ table,
 
 .analytics-kpi small {
   margin-top: 3px;
+}
+
+.analytics-kpi .analytics-trend {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 
 .analytics-metric-select {

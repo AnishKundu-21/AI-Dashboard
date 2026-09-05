@@ -7,6 +7,10 @@ import {
 } from '../../shared/providers'
 import type {
   AlertRow,
+  AnalyticsPeriodInput,
+  AnalyticsSnapshot,
+  AnalyticsTotals,
+  AnalyticsWindow,
   AppSettings,
   BurnPoint,
   BurnSeries,
@@ -25,7 +29,13 @@ import { buildBurnSeries } from '../analytics/burn'
 import { buildProjectionCard } from '../analytics/projections'
 import { pricingInfo } from '../pricing/store'
 import { fxInfo } from '../pricing/fx'
-import { makeDayFormatter, rangeStartMs } from '../util/time'
+import {
+  makeDayFormatter,
+  rangeStartMs,
+  resolveAnalyticsPeriod,
+  resolveTimeZone,
+  type ResolvedAnalyticsWindow
+} from '../util/time'
 import { normalizeModelName } from '../collectors/models'
 
 type ProviderFilter = ProviderId | 'all'
@@ -81,6 +91,95 @@ export function getSettings(db: Database.Database): AppSettings {
   // Rows written before onboarding existed represent an established install,
   // so they should not interrupt an existing user's dashboard with a tour.
   return { ...parsed, onboarding_completed: parsed.onboarding_completed ?? true }
+}
+
+type AnalyticsTotalsWithFirstEvent = AnalyticsTotals & { min_ts_ms: number | null }
+
+/**
+ * Event-grain totals for one exact half-open time range. Both the standard
+ * overview and the analytics comparison call this so neither can drift at a
+ * timezone boundary.
+ */
+function getAnalyticsTotalsInRange(
+  db: Database.Database,
+  provider: ProviderFilter,
+  enabled: readonly ProviderId[],
+  startMs: number | null,
+  endMs: number | null
+): AnalyticsTotalsWithFirstEvent {
+  const row = db
+    .prepare(
+      `
+    SELECT
+      COALESCE(SUM(uncached_input + cached_input + cache_creation + output), 0) AS tokens_total,
+      COALESCE(SUM(cost_usd), 0) AS api_equiv_usd,
+      COUNT(DISTINCT provider || session_id) AS session_count,
+      COALESCE(SUM(cache_savings_usd), 0) AS cache_savings_usd,
+      COUNT(DISTINCT CASE WHEN cost_usd IS NULL THEN provider || session_id END)
+        AS unpriced_sessions,
+      COALESCE(SUM(uncached_input), 0) AS uncached_input,
+      COALESCE(SUM(cached_input), 0) AS cached_input,
+      COALESCE(SUM(cache_creation), 0) AS cache_creation,
+      COALESCE(SUM(output), 0) AS output,
+      COALESCE(SUM(reasoning), 0) AS reasoning,
+      COUNT(*) AS model_calls,
+      MIN(ts_ms) AS min_ts_ms
+    FROM usage_events
+    WHERE (@startMs IS NULL OR ts_ms >= @startMs)
+      AND (@endMs IS NULL OR ts_ms < @endMs)
+      AND ${providerClause(provider, enabled)}
+  `
+    )
+    .get({ startMs, endMs, provider }) as {
+    tokens_total: number
+    api_equiv_usd: number
+    session_count: number
+    cache_savings_usd: number
+    unpriced_sessions: number
+    uncached_input: number
+    cached_input: number
+    cache_creation: number
+    output: number
+    reasoning: number
+    model_calls: number
+    min_ts_ms: number | null
+  }
+
+  return {
+    tokens_total: row.tokens_total,
+    api_equiv_usd: row.api_equiv_usd,
+    session_count: row.session_count,
+    cache_savings_usd: row.cache_savings_usd,
+    unpriced_sessions: row.unpriced_sessions,
+    token_breakdown: {
+      uncached_input: row.uncached_input,
+      cached_input: row.cached_input,
+      cache_creation: row.cache_creation,
+      output: row.output,
+      reasoning: row.reasoning,
+      model_calls: row.model_calls
+    },
+    min_ts_ms: row.min_ts_ms
+  }
+}
+
+function analyticsWindow(
+  window: ResolvedAnalyticsWindow,
+  timezone: string
+): AnalyticsWindow {
+  if (!window.startDay || !window.endDay) {
+    return { start_day: null, end_day: null, days: null, timezone, label: 'Lifetime' }
+  }
+  const label = window.startDay === window.endDay
+    ? window.startDay
+    : `${window.startDay} – ${window.endDay}`
+  return {
+    start_day: window.startDay,
+    end_day: window.endDay,
+    days: window.days,
+    timezone,
+    label
+  }
 }
 
 export function setSettings(
@@ -213,31 +312,7 @@ export function getOverview(
   const timezone = settings.timezone
   const enabled = enabledProviderIds(settings)
   const sinceMs = rangeStartMs(rangeDays, timezone)
-
-  const row = db
-    .prepare(
-      `
-    SELECT
-      COALESCE(SUM(uncached_input + cached_input + cache_creation + output), 0) AS tokens_total,
-      COALESCE(SUM(cost_usd), 0) AS api_equiv_usd,
-      COUNT(DISTINCT provider || session_id) AS session_count,
-      COALESCE(SUM(cache_savings_usd), 0) AS cache_savings_usd,
-      COUNT(DISTINCT CASE WHEN cost_usd IS NULL THEN provider || session_id END)
-        AS unpriced_sessions,
-      MIN(ts_ms) AS min_ts_ms
-    FROM usage_events
-    WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
-      AND ${providerClause(provider, enabled)}
-  `
-    )
-    .get({ sinceMs, provider }) as {
-    tokens_total: number
-    api_equiv_usd: number
-    session_count: number
-    cache_savings_usd: number
-    unpriced_sessions: number
-    min_ts_ms: number | null
-  }
+  const row = getAnalyticsTotalsInRange(db, provider, enabled, sinceMs, null)
 
   const byProviderRows = db
     .prepare(
@@ -276,21 +351,6 @@ export function getOverview(
       ? usedValues.reduce((a, b) => a + b, 0) / usedValues.length
       : null
 
-  const breakdown = db
-    .prepare(
-      `SELECT
-         COALESCE(SUM(uncached_input), 0) AS uncached_input,
-         COALESCE(SUM(cached_input), 0) AS cached_input,
-         COALESCE(SUM(cache_creation), 0) AS cache_creation,
-         COALESCE(SUM(output), 0) AS output,
-         COALESCE(SUM(reasoning), 0) AS reasoning,
-         COUNT(*) AS model_calls
-       FROM usage_events
-       WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
-         AND ${providerClause(provider, enabled)}`
-    )
-    .get({ sinceMs, provider }) as OverviewMetrics['token_breakdown']
-
   const averageDays =
     rangeDays === 0
       ? inclusiveDaysSince(
@@ -305,12 +365,64 @@ export function getOverview(
     avg_used_pct,
     range_days: rangeDays,
     avg_daily_tokens: row.tokens_total / averageDays,
-    token_breakdown: breakdown,
+    token_breakdown: row.token_breakdown,
     by_provider: byProviderRows,
     cache_savings_usd: row.cache_savings_usd,
     unpriced_sessions: row.unpriced_sessions,
     pricing: pricingInfo(),
     fx: fxInfo()
+  }
+}
+
+/**
+ * The public analytics seam for selected-period comparisons. It returns raw
+ * observed totals for adjacent windows; percentages and trend copy belong in
+ * the renderer so zero baselines can be shown as "new" rather than infinity.
+ */
+export function getAnalyticsSnapshot(
+  db: Database.Database,
+  input: AnalyticsPeriodInput & { provider: ProviderFilter },
+  nowMs: number = Date.now()
+): AnalyticsSnapshot {
+  const settings = getSettings(db)
+  const timezone = resolveTimeZone(settings.timezone)
+  const enabled = enabledProviderIds(settings)
+  const period = resolveAnalyticsPeriod(input, timezone, nowMs)
+  const current = getAnalyticsTotalsInRange(
+    db,
+    input.provider,
+    enabled,
+    period.current.startMs,
+    period.current.endMs
+  )
+  const previous = period.previous
+    ? {
+        window: analyticsWindow(period.previous, timezone),
+        totals: getAnalyticsTotalsInRange(
+          db,
+          input.provider,
+          enabled,
+          period.previous.startMs,
+          period.previous.endMs
+        )
+      }
+    : null
+
+  // `min_ts_ms` is only needed for lifetime averages in getOverview; snapshots
+  // deliberately expose the stable, user-comparable metric contract instead.
+  const { min_ts_ms: _currentFirstEvent, ...currentTotals } = current
+  if (previous) {
+    const { min_ts_ms: _previousFirstEvent, ...previousTotals } = previous.totals
+    return {
+      window: analyticsWindow(period.current, timezone),
+      current: currentTotals,
+      previous: { window: previous.window, totals: previousTotals }
+    }
+  }
+  return {
+    window: analyticsWindow(period.current, timezone),
+    current: currentTotals,
+    previous: null
   }
 }
 

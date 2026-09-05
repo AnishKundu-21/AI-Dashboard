@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import {
   AlertRowSchema,
+  AnalyticsPeriodInputSchema,
+  AnalyticsSnapshotSchema,
   AppSettingsSchema,
   BurnPointSchema,
   BurnSeriesSchema,
@@ -20,6 +22,7 @@ import {
 /** Channel names used by main ↔ renderer via contextBridge */
 export const IPC = {
   getOverview: 'dashboard:getOverview',
+  getAnalyticsSnapshot: 'dashboard:getAnalyticsSnapshot',
   getQuotas: 'dashboard:getQuotas',
   getDailyUsage: 'dashboard:getDailyUsage',
   getBurn: 'dashboard:getBurn',
@@ -43,6 +46,14 @@ export const GetOverviewInput = DashboardFilterSchema.pick({
   range_days: true
 })
 export type GetOverviewInput = z.infer<typeof GetOverviewInput>
+
+/** A resolved current/previous-period analytics snapshot. */
+export const GetAnalyticsSnapshotInput = z
+  .object({
+    provider: z.union([ProviderIdSchema, z.literal('all')]).default('all')
+  })
+  .and(AnalyticsPeriodInputSchema)
+export type GetAnalyticsSnapshotInput = z.infer<typeof GetAnalyticsSnapshotInput>
 
 export const GetSessionsInput = DashboardFilterSchema
 export type GetSessionsInput = z.infer<typeof GetSessionsInput>
@@ -77,6 +88,9 @@ export type RescanProviderInput = z.infer<typeof RescanProviderInput>
 /** API surface exposed on window.api (preload) */
 export interface DashboardApi {
   getOverview: (input?: GetOverviewInput) => Promise<z.infer<typeof OverviewMetricsSchema>>
+  getAnalyticsSnapshot: (
+    input?: GetAnalyticsSnapshotInput
+  ) => Promise<z.infer<typeof AnalyticsSnapshotSchema>>
   getQuotas: () => Promise<z.infer<typeof QuotaSnapshotSchema>[]>
   getDailyUsage: (input?: GetOverviewInput) => Promise<z.infer<typeof DailyUsagePointSchema>[]>
   getBurn: (input: GetBurnInput) => Promise<z.infer<typeof BurnPointSchema>[]>

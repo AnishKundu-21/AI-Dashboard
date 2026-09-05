@@ -9,6 +9,25 @@
 
 const DAY_MS = 86_400_000
 
+export type AnalyticsPeriodSelection = {
+  range_days: number
+  start_day?: string
+  end_day?: string
+}
+
+export type ResolvedAnalyticsWindow = {
+  startDay: string | null
+  endDay: string | null
+  startMs: number | null
+  endMs: number | null
+  days: number | null
+}
+
+export type ResolvedAnalyticsPeriod = {
+  current: ResolvedAnalyticsWindow
+  previous: ResolvedAnalyticsWindow | null
+}
+
 export function resolveTimeZone(timezone: string | null | undefined): string {
   if (!timezone || timezone === 'system') {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -114,9 +133,87 @@ export function rangeStartMs(
   if (rangeDays === 0) return null
   const zone = resolveTimeZone(timezone)
   const today = makeDayFormatter(zone)(nowMs)
-  const todayStart = startOfDayMs(today, zone)
-  const target = makeDayFormatter(zone)(todayStart - (rangeDays - 1) * DAY_MS)
+  // Calendar arithmetic is essential here: subtracting fixed 24-hour blocks
+  // crosses a 23- or 25-hour DST day and can select one extra calendar date.
+  const target = addCalendarDays(today, -(rangeDays - 1))
   return startOfDayMs(target, zone)
+}
+
+/** Adds calendar dates without accidentally applying a machine timezone. */
+export function addCalendarDays(day: string, amount: number): string {
+  const base = new Date(`${day}T00:00:00.000Z`)
+  if (Number.isNaN(base.getTime())) return ''
+  base.setUTCDate(base.getUTCDate() + amount)
+  return base.toISOString().slice(0, 10)
+}
+
+function calendarDayCount(startDay: string, endDay: string): number {
+  const start = Date.parse(`${startDay}T00:00:00.000Z`)
+  const end = Date.parse(`${endDay}T00:00:00.000Z`)
+  return Math.floor((end - start) / DAY_MS) + 1
+}
+
+/**
+ * Resolves a preset or custom analytics selection exactly once, in the usage
+ * timezone. The end instant is exclusive so event queries never double-count a
+ * midnight boundary. Lifetime intentionally has no prior-period comparison.
+ */
+export function resolveAnalyticsPeriod(
+  selection: AnalyticsPeriodSelection,
+  timezone: string | null | undefined,
+  nowMs: number = Date.now()
+): ResolvedAnalyticsPeriod {
+  const zone = resolveTimeZone(timezone)
+  if (selection.start_day && selection.end_day) {
+    const days = calendarDayCount(selection.start_day, selection.end_day)
+    const current: ResolvedAnalyticsWindow = {
+      startDay: selection.start_day,
+      endDay: selection.end_day,
+      startMs: startOfDayMs(selection.start_day, zone),
+      endMs: startOfDayMs(addCalendarDays(selection.end_day, 1), zone),
+      days
+    }
+    const previousStartDay = addCalendarDays(selection.start_day, -days)
+    return {
+      current,
+      previous: {
+        startDay: previousStartDay,
+        endDay: addCalendarDays(selection.start_day, -1),
+        startMs: startOfDayMs(previousStartDay, zone),
+        endMs: current.startMs,
+        days
+      }
+    }
+  }
+
+  if (selection.range_days === 0) {
+    return {
+      current: { startDay: null, endDay: null, startMs: null, endMs: null, days: null },
+      previous: null
+    }
+  }
+
+  const endDay = dayInZone(nowMs, zone)
+  const startDay = addCalendarDays(endDay, -(selection.range_days - 1))
+  const startMs = startOfDayMs(startDay, zone)
+  const days = selection.range_days
+  const previousStartDay = addCalendarDays(startDay, -days)
+  return {
+    current: {
+      startDay,
+      endDay,
+      startMs,
+      endMs: startOfDayMs(addCalendarDays(endDay, 1), zone),
+      days
+    },
+    previous: {
+      startDay: previousStartDay,
+      endDay: addCalendarDays(startDay, -1),
+      startMs: startOfDayMs(previousStartDay, zone),
+      endMs: startMs,
+      days
+    }
+  }
 }
 
 /** Every day from `fromDay` to `toDay` inclusive, so charts can show gaps as zero. */

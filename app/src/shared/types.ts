@@ -26,6 +26,55 @@ export const RangeDaysSchema = z.union([
 ])
 export type RangeDays = z.infer<typeof RangeDaysSchema>
 
+/** An ISO calendar date, deliberately without a time or machine timezone. */
+export const CalendarDaySchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'calendar dates use YYYY-MM-DD')
+  .refine((day) => {
+    const parsed = new Date(`${day}T00:00:00.000Z`)
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === day
+  }, 'calendar date must exist')
+export type CalendarDay = z.infer<typeof CalendarDaySchema>
+
+const AnalyticsPeriodFieldsSchema = z.object({
+  range_days: RangeDaysSchema.optional(),
+  /** Inclusive start/end dates for a custom analytics window. */
+  start_day: CalendarDaySchema.optional(),
+  end_day: CalendarDaySchema.optional()
+})
+
+/**
+ * A preset range or an explicit inclusive calendar range. Custom dates always
+ * travel as a pair so main-process code never has to guess an open boundary.
+ */
+export const AnalyticsPeriodInputSchema = AnalyticsPeriodFieldsSchema.superRefine(
+  (value, ctx) => {
+    const hasCustomRange = Boolean(value.start_day || value.end_day)
+    if (Boolean(value.start_day) !== Boolean(value.end_day)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'start_day and end_day must be supplied together',
+        path: value.start_day ? ['end_day'] : ['start_day']
+      })
+    }
+    if (value.start_day && value.end_day && value.start_day > value.end_day) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'start_day must not be after end_day',
+        path: ['end_day']
+      })
+    }
+    if (hasCustomRange && value.range_days !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'custom dates cannot be combined with a preset range',
+        path: ['range_days']
+      })
+    }
+  }
+).transform((value) => ({ ...value, range_days: value.range_days ?? 7 }))
+export type AnalyticsPeriodInput = z.infer<typeof AnalyticsPeriodInputSchema>
+
 export const ConfidenceSchema = z.enum(['live', 'estimate', 'unknown'])
 export type Confidence = z.infer<typeof ConfidenceSchema>
 
@@ -299,6 +348,46 @@ export const OverviewMetricsSchema = z.object({
   fx: FxInfoSchema
 })
 export type OverviewMetrics = z.infer<typeof OverviewMetricsSchema>
+
+/** The portion of an analytics snapshot that is meaningful to compare over time. */
+export const AnalyticsTotalsSchema = z.object({
+  tokens_total: z.number(),
+  api_equiv_usd: z.number(),
+  session_count: z.number(),
+  cache_savings_usd: z.number(),
+  unpriced_sessions: z.number(),
+  token_breakdown: z.object({
+    uncached_input: z.number(),
+    cached_input: z.number(),
+    cache_creation: z.number(),
+    output: z.number(),
+    reasoning: z.number(),
+    model_calls: z.number()
+  })
+})
+export type AnalyticsTotals = z.infer<typeof AnalyticsTotalsSchema>
+
+/** A resolved calendar window returned by the main process, never guessed in the renderer. */
+export const AnalyticsWindowSchema = z.object({
+  start_day: CalendarDaySchema.nullable(),
+  end_day: CalendarDaySchema.nullable(),
+  days: z.number().int().positive().nullable(),
+  timezone: z.string(),
+  label: z.string()
+})
+export type AnalyticsWindow = z.infer<typeof AnalyticsWindowSchema>
+
+export const AnalyticsSnapshotSchema = z.object({
+  window: AnalyticsWindowSchema,
+  current: AnalyticsTotalsSchema,
+  previous: z
+    .object({
+      window: AnalyticsWindowSchema,
+      totals: AnalyticsTotalsSchema
+    })
+    .nullable()
+})
+export type AnalyticsSnapshot = z.infer<typeof AnalyticsSnapshotSchema>
 
 export const DailyUsagePointSchema = z.object({
   day: z.string(),
