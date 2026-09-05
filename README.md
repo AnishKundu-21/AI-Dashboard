@@ -28,7 +28,7 @@ This project builds that pane as a **desktop app** that reuses the logins you al
 | Live data research | **Validated** for Grok + Codex; Claude when CLI logged in |
 | Worked example | [Real demo run (Grok 33% / Codex plus 0% / Claude n/a)](#worked-example--real-demo-run-2026-07-28) |
 | Research demos | Demo files at project root |
-| Electron app (`app/`) | **Phase 4** — real-time collectors, diagnostics, security, and Windows packaging (`app/`) |
+| Electron app (`app/`) | **Phase 4 + Phase A** — real-time collectors, diagnostics, security, Windows packaging, and a rebuilt token-accounting and pricing pipeline (`app/`) |
 
 Read **[`PLAN.md`](./PLAN.md)** for full architecture, phases, IPC, schema, risks, and collaboration rules.
 
@@ -50,12 +50,15 @@ Read **[`PLAN.md`](./PLAN.md)** for full architecture, phases, IPC, schema, risk
 
 - Remaining quota cards with **AUTH LIVE** vs **LOCAL ESTIMATE**
 - Overview: tokens, API-equivalent cost, sessions, average burn
+- Per-class pricing (input / cache read / cache write / output) from the
+  public LiteLLM rate table, with cache savings and an explicit **unpriced**
+  state for models with no known rate
 - Daily usage + burn/projection charts
 - Model mix + searchable recent sessions
 - Forecasts / simple recommendations
 - CSV / JSON export
 - In-app alerts + **Windows notifications**
-- Currency from locale or user choice (INR, USD, EUR, …)
+- Currency from locale or user choice, converted at fetched ECB rates (falls back to USD when no rate is available)
 - Privacy: **never** stores prompts or responses
 
 ### Explicitly later

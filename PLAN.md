@@ -896,6 +896,53 @@ via real device testing: the grok/codex stale-fallback source string grew unboun
 across repeated failed polls, and Grok's billing mapper treated an omitted
 (zero-value) `creditUsagePercent` as "unknown" instead of 0% right after a quota reset.
 
+Implementation update (2026-09-05) — Phase A correctness pass: token accounting
+and pricing were rebuilt after comparing this collector against T3 Code's
+(`pingdotgg/t3code`) usage subsystem and `ccusage`.
+
+Defects fixed, each covered by a regression test:
+
+1. Claude `tokens_total` excluded cached tokens while Codex's included them,
+   so the two providers were not comparable and Claude cost was understated by
+   a large multiple (cache reads dominate a coding session).
+2. Cost came from a single blended USD/M rate applied to that wrong base.
+   Prices now come from LiteLLM's public table (24h TTL, disk snapshot,
+   per-model user overrides) and each token class is priced at its own rate.
+   An unknown model is reported unpriced rather than priced at a default.
+3. Claude de-duplication was by `message.id` within a single file. It is now
+   keyed on `messageId:requestId` and applied across files, because Claude
+   writes one record per content block — each repeating the full usage object
+   — and replays earlier messages into new transcripts on resume.
+4. Codex read the cumulative `total_token_usage` and had no fork handling.
+   It now sums `last_token_usage` deltas, drops re-emitted duplicates, and
+   suppresses the parent history copied into a forked or subagent rollout.
+5. Grok summed usage from every update line carrying a `usage` object, counting
+   interim updates on top of the completed turn. Only `turn_completed` counts
+   now, and a per-model breakdown yields one event per model.
+6. Grok provider-reported cost divided ticks by 1e9; T3 Code's reading of
+   `total_cost_usd_ticks` is 1e10. **Worth verifying against a live account** —
+   if 1e10 is right, the previous figure was tenfold too high.
+7. Per-provider file caps (250 / 80 / 250) silently truncated history, and
+   Codex re-read every rollout in full on every watcher-triggered scan. Scans
+   are now incremental — memoised by `(size, mtime)`, resuming from a byte
+   offset behind a guard hash — so the caps are gone.
+8. Day bucketing used ad-hoc offset maths; it now lives in a tested module
+   covering half-hour offsets and DST boundaries.
+9. FX was a hardcoded table, duplicated independently in main and the renderer.
+   Rates are fetched (Frankfurter/ECB, no key) and shared; with no rate the
+   amount is shown in USD instead of converted at a stale constant.
+
+Migration 6 clears `sessions` and `usage_daily` so the next scan rebuilds them
+from the transcripts. Stored figures could not be corrected in place, and
+sessions whose transcripts are already gone are lost with them.
+
+Still open from the review, in priority order: move Claude and Codex quota onto
+the official SDK/app-server protocols instead of the private HTTP endpoints;
+model unavailability as `unsupported` vs `probeFailed` vs `notConnected`;
+event-grain storage so a session spanning midnight splits across days; provider
+registry opened to Cursor / OpenCode / Gemini / Copilot; multi-machine merge;
+CI, linting, code signing and an update feed.
+
 ### Phase 5 — Future
 
 - Multi-machine JSONL

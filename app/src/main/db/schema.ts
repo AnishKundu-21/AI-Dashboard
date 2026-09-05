@@ -165,5 +165,26 @@ FROM sessions
 WHERE COALESCE(started_at, created_at) IS NOT NULL
 GROUP BY substr(COALESCE(started_at, created_at), 1, 10), provider;
 `
+  },
+  {
+    version: 6,
+    sql: `
+ALTER TABLE sessions ADD COLUMN cache_savings_usd REAL;
+ALTER TABLE sessions ADD COLUMN unpriced INTEGER NOT NULL DEFAULT 0;
+
+-- Every stored token and cost figure predates the canonical token model and
+-- the per-class rate table, and is wrong in ways that cannot be corrected in
+-- place: Claude totals excluded cached tokens while Codex totals included
+-- them, repeated per-content-block records were counted more than once, forked
+-- Codex rollouts double counted their parent, and every cost came from a
+-- single blended rate applied to the wrong token base.
+--
+-- Rows are cleared so the next scan rebuilds them from the transcripts, which
+-- are the source of truth. Sessions whose transcripts have since been deleted
+-- are lost with them; keeping known-wrong numbers would corrupt every
+-- aggregate they appear in, which is worse than a shorter history.
+DELETE FROM sessions;
+DELETE FROM usage_daily;
+`
   }
 ]

@@ -31,7 +31,44 @@ npm run dist:signed # production artifact; requires signing environment/certific
 
 ## Current phase
 
-**Phase 4:** real-data hardening, diagnostics, security, and Windows packaging.
+**Phase 4 + Phase A correctness pass:** real-data hardening, diagnostics,
+security, Windows packaging, and a rebuilt usage/pricing pipeline.
+
+### Phase A — token accounting and pricing
+
+Usage is now parsed into a canonical four-class token model
+(`uncached_input` / `cached_input` / `cache_creation` / `output`, plus
+`reasoning` as a documented subset of output) and priced per class:
+
+- **Model prices come from LiteLLM's public rate table**, fetched on a 24h TTL
+  and snapshotted to `%APPDATA%` so pricing survives being offline. A model
+  with no known rate is reported as **unpriced**, never priced at a guess.
+  Per-model overrides can be set in settings for private or unreleased models.
+- **Cache reads and writes are priced separately** from uncached input. A
+  coding agent's traffic is mostly cache reads, at roughly a tenth of the input
+  rate, so a single blended rate cannot approximate it. Cache savings are
+  reported alongside cost.
+- **`tokens_total` includes cached tokens for every provider.** It previously
+  excluded them for Claude and included them for Codex, so the two could not be
+  compared.
+- **De-duplication is global, keyed on `messageId:requestId`.** Claude writes
+  one record per assistant content block, each repeating the whole usage
+  object, and replays earlier messages into new transcripts when a session is
+  resumed.
+- **Codex reads per-turn deltas** (`last_token_usage`), not the cumulative
+  `total_token_usage`, and **suppresses the copied parent history** at the head
+  of a forked or subagent rollout.
+- **Grok counts only `turn_completed` updates**, and emits one event per model
+  so a multi-model turn is priced at each model's own rate.
+- **Day bucketing is timezone-correct**, tested against half-hour offsets and
+  DST boundaries.
+- **Transcript scanning is incremental.** Files are memoised by `(size, mtime)`
+  and a grown file resumes from a byte offset behind a guard hash, so the
+  previous per-provider file caps (250 / 80 / 250) are gone and full history is
+  scanned.
+- **FX rates are fetched** from Frankfurter (ECB reference rates, no API key)
+  with the same TTL-and-snapshot pattern. With no rate available, amounts are
+  shown in USD rather than converted at a stale hardcoded rate.
 
 - Live collectors (Grok / Codex / Claude discovery) from Phase 2
 - Overview with cost-by-provider + avg daily tokens
@@ -39,7 +76,6 @@ npm run dist:signed # production artifact; requires signing environment/certific
 - Model mix donut · session search · richer CSV/JSON export (save dialog)
 - Forecasts with days-to-empty + recommendations
 - Settings: currency (FX), locale, notify, network quota, per-provider plan auto/manual
-- Pricing rate card `2026-07-v1`
 - Empty databases stay empty: production never inserts sample sessions or fake live quota
 - Real-time CLI filesystem watchers push local changes in under a second; remote quota falls back to 15-second focused polling
 - Provider-neutral token detail for Grok, Codex, and Claude: input, output, cached, reasoning (when emitted), model calls, provider-reported cost, and API duration

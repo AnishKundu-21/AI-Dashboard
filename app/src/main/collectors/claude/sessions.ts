@@ -1,149 +1,171 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
+import { existsSync, readdirSync } from 'fs'
 import { basename, join } from 'path'
-import type { SessionRow } from '../../../shared/types'
-import { apiEquivUsd } from '../../pricing/rates'
+import type { SessionRow, UsageEvent } from '../../../shared/types'
 import { projectNameFromCwd } from '../../util/project'
-import { dominantModel } from '../models'
+import { dedupeEvents, eventsToSessionRows, type SessionFacts } from '../aggregate'
+import {
+  readCached,
+  splitLines,
+  type ParseChunk,
+  type ParseOutput,
+  type ScanCache
+} from '../scanCache'
+import { CLAUDE_SOURCE, mightCarryClaudeUsage, parseClaudeLine } from './parse'
 
-const MAX_FILES = 250
-
-interface CacheEntry {
-  size: number
-  mtimeMs: number
-  row: SessionRow | null
+interface ClaudeFileFacts {
+  session_id: string | null
+  cwd: string | null
+  started_at_ms: number | null
+  ended_at_ms: number | null
+  duration_ms: number | null
+  total_cost_usd: number | null
+  status: SessionRow['status']
 }
 
-const cache = new Map<string, CacheEntry>()
+function emptyFacts(): ClaudeFileFacts {
+  return {
+    session_id: null,
+    cwd: null,
+    started_at_ms: null,
+    ended_at_ms: null,
+    duration_ms: null,
+    total_cost_usd: null,
+    status: 'unknown'
+  }
+}
 
-export function collectClaudeSessions(home: string): SessionRow[] {
+function mergeFacts(a: ClaudeFileFacts, b: ClaudeFileFacts): ClaudeFileFacts {
+  return {
+    session_id: b.session_id ?? a.session_id,
+    cwd: b.cwd ?? a.cwd,
+    started_at_ms: minDefined(a.started_at_ms, b.started_at_ms),
+    ended_at_ms: maxDefined(a.ended_at_ms, b.ended_at_ms),
+    duration_ms: b.duration_ms ?? a.duration_ms,
+    total_cost_usd: b.total_cost_usd ?? a.total_cost_usd,
+    status: b.status !== 'unknown' ? b.status : a.status
+  }
+}
+
+/**
+ * Parses one chunk of a Claude transcript.
+ *
+ * Stateless per line, so a resumed parse only needs the previous facts merged
+ * back in — which `readCached` does by handing the caller both.
+ */
+function parseChunk(
+  fallbackId: string,
+  previous: ClaudeFileFacts
+): (chunk: ParseChunk<null>) => ParseOutput<null> {
+  return (chunk) => {
+    const split = splitLines(chunk.text)
+    let facts = { ...previous }
+    const events: UsageEvent[] = []
+    const tailEvents: UsageEvent[] = []
+
+    const consume = (line: string, into: UsageEvent[]): void => {
+      // Most transcript lines are tool output; skip the JSON parse for those.
+      if (!mightCarryClaudeUsage(line) && !line.includes('"result"')) return
+      const parsed = parseClaudeLine(line, fallbackId)
+      facts = mergeFacts(facts, {
+        session_id: parsed.session_id,
+        cwd: parsed.cwd,
+        started_at_ms: parsed.timestamp_ms,
+        ended_at_ms: parsed.timestamp_ms,
+        duration_ms: parsed.duration_ms,
+        total_cost_usd: parsed.total_cost_usd,
+        status: parsed.is_result
+          ? parsed.result_is_error
+            ? 'error'
+            : 'complete'
+          : 'unknown'
+      })
+      if (parsed.event) into.push(parsed.event)
+    }
+
+    for (const line of split.lines) consume(line, events)
+    if (split.tail.trim()) consume(split.tail, tailEvents)
+
+    return {
+      events,
+      tail_events: tailEvents,
+      facts,
+      state: null,
+      consumed: split.consumed
+    }
+  }
+}
+
+/**
+ * Scans every Claude transcript on disk.
+ *
+ * There is deliberately no cap on file count: the scan cache makes an
+ * unchanged file free, so bounding the scan would only hide history.
+ */
+export function collectClaudeSessions(
+  home: string,
+  cache: ScanCache = new Map()
+): SessionRow[] {
   const projects = join(home, 'projects')
   if (!existsSync(projects)) return []
-  return listJsonlFiles(projects)
-    .map((path) => ({ path, mtimeMs: safeStat(path)?.mtimeMs ?? 0 }))
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, MAX_FILES)
-    .map(({ path }) => readCached(path))
-    .filter((row): row is SessionRow => row?.tokens_total != null)
-}
 
-export function parseClaudeSession(text: string, fallbackId: string): SessionRow | null {
-  let sessionId: string | null = null
-  let cwd: string | null = null
-  let startedAt: string | null = null
-  let endedAt: string | null = null
-  let durationMs: number | null = null
-  let providerCostUsd: number | null = null
-  let status: SessionRow['status'] = 'unknown'
-  let tokensIn = 0
-  let tokensOut = 0
-  let tokensCached = 0
-  let modelCalls = 0
-  let foundUsage = false
-  const models: string[] = []
-  const messageIds = new Set<string>()
+  const events: UsageEvent[] = []
+  const factsBySession = new Map<string, ClaudeFileFacts>()
 
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    let root: Record<string, unknown>
-    try {
-      root = JSON.parse(line) as Record<string, unknown>
-    } catch {
-      continue
-    }
-    sessionId = stringValue(root.sessionId) ?? stringValue(root.session_id) ?? sessionId
-    cwd = stringValue(root.cwd) ?? cwd
-    const timestamp = isoTimestamp(root.timestamp)
-    if (timestamp) {
-      if (!startedAt || timestamp < startedAt) startedAt = timestamp
-      if (!endedAt || timestamp > endedAt) endedAt = timestamp
-    }
-
-    const type = stringValue(root.type)
-    const message = asRecord(root.message)
-    if (type === 'assistant' && message) {
-      const messageId = stringValue(message.id)
-      if (messageId && messageIds.has(messageId)) continue
-      if (messageId) messageIds.add(messageId)
-      const usage = asRecord(message.usage)
-      if (usage) {
-        tokensIn += numberValue(usage.input_tokens)
-        tokensOut += numberValue(usage.output_tokens)
-        tokensCached +=
-          numberValue(usage.cache_read_input_tokens) +
-          numberValue(usage.cache_creation_input_tokens)
-        foundUsage = true
-        modelCalls++
-      }
-      const model = stringValue(message.model)
-      if (model) models.push(model)
-    }
-
-    if (type === 'result') {
-      status = root.is_error === true ? 'error' : 'complete'
-      durationMs = finiteNumber(root.duration_ms) ?? durationMs
-      providerCostUsd = finiteNumber(root.total_cost_usd) ?? providerCostUsd
-    }
-  }
-
-  const id = sessionId ?? fallbackId
-  if (!id) return null
-  const model = dominantModel('claude', models) ?? 'Claude'
-  const tokensTotal = foundUsage ? tokensIn + tokensOut : null
-  if (durationMs == null && startedAt && endedAt) {
-    const start = Date.parse(startedAt)
-    const end = Date.parse(endedAt)
-    if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start) {
-      durationMs = end - start
-    }
-  }
-
-  return {
-    id: `claude:${id}`,
-    provider: 'claude',
-    project: projectNameFromCwd(cwd),
-    model,
-    tokens_in: foundUsage ? tokensIn : null,
-    tokens_out: foundUsage ? tokensOut : null,
-    tokens_total: tokensTotal,
-    tokens_cached: foundUsage ? tokensCached : null,
-    tokens_reasoning: null,
-    model_calls: foundUsage ? modelCalls : null,
-    api_equiv_usd: apiEquivUsd(model, tokensTotal),
-    provider_cost_usd: providerCostUsd,
-    api_duration_ms: null,
-    duration_ms: durationMs,
-    status,
-    started_at: startedAt,
-    ended_at: endedAt,
-    source: 'claude:projects-jsonl'
-  }
-}
-
-function readCached(path: string): SessionRow | null {
-  const stat = safeStat(path)
-  if (!stat) return null
-  const previous = cache.get(path)
-  if (previous && previous.size === stat.size && previous.mtimeMs === stat.mtimeMs) {
-    return previous.row
-  }
-  try {
-    const row = parseClaudeSession(
-      readFileSync(path, 'utf-8'),
-      basename(path).replace(/\.jsonl$/i, '')
+  for (const path of listJsonlFiles(projects)) {
+    const fallbackId = basename(path).replace(/\.jsonl$/i, '')
+    const previous = new Map(factsBySession)
+    const result = readCached<null>(cache, path, 'claude', (chunk) =>
+      parseChunk(
+        fallbackId,
+        chunk.start_offset === 0
+          ? emptyFacts()
+          : (previous.get(fallbackId) ?? emptyFacts())
+      )(chunk)
     )
-    cache.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, row })
-    return row
-  } catch {
-    return null
+    if (!result) continue
+
+    const fileFacts = (result.facts as ClaudeFileFacts | undefined) ?? emptyFacts()
+    const sessionId = fileFacts.session_id ?? fallbackId
+    factsBySession.set(
+      sessionId,
+      mergeFacts(factsBySession.get(sessionId) ?? emptyFacts(), fileFacts)
+    )
+    events.push(...result.events)
   }
+
+  // Across files, not within one: a resumed or branched session replays
+  // earlier messages into a new transcript, and those repeats carry the same
+  // message/request pair.
+  const { events: unique } = dedupeEvents(events)
+
+  const facts: SessionFacts[] = []
+  for (const [sessionId, fileFacts] of factsBySession) {
+    facts.push({
+      id: `claude:${sessionId}`,
+      provider: 'claude',
+      project: projectNameFromCwd(fileFacts.cwd),
+      status: fileFacts.status,
+      started_at: isoOrNull(fileFacts.started_at_ms),
+      ended_at: isoOrNull(fileFacts.ended_at_ms),
+      duration_ms:
+        fileFacts.duration_ms ??
+        durationBetween(fileFacts.started_at_ms, fileFacts.ended_at_ms),
+      provider_cost_usd: fileFacts.total_cost_usd,
+      source: CLAUDE_SOURCE
+    })
+  }
+
+  return eventsToSessionRows(unique, facts).filter(
+    (row) => row.tokens_total != null
+  )
 }
 
 function listJsonlFiles(root: string): string[] {
   const output: string[] = []
   const walk = (dir: string): void => {
-    let entries
+    let entries: import('fs').Dirent[]
     try {
-      entries = readdirSync(dir, { withFileTypes: true })
+      entries = readdirSync(dir, { withFileTypes: true }) as import('fs').Dirent[]
     } catch {
       return
     }
@@ -157,36 +179,23 @@ function listJsonlFiles(root: string): string[] {
   return output
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
+function minDefined(a: number | null, b: number | null): number | null {
+  if (a === null) return b
+  if (b === null) return a
+  return Math.min(a, b)
 }
 
-function stringValue(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value : null
+function maxDefined(a: number | null, b: number | null): number | null {
+  if (a === null) return b
+  if (b === null) return a
+  return Math.max(a, b)
 }
 
-function numberValue(value: unknown): number {
-  return finiteNumber(value) ?? 0
+function isoOrNull(ms: number | null): string | null {
+  return ms === null ? null : new Date(ms).toISOString()
 }
 
-function finiteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : null
-}
-
-function isoTimestamp(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const time = Date.parse(value)
-  return Number.isNaN(time) ? null : new Date(time).toISOString()
-}
-
-function safeStat(path: string) {
-  try {
-    return statSync(path)
-  } catch {
-    return null
-  }
+function durationBetween(start: number | null, end: number | null): number | null {
+  if (start === null || end === null || end < start) return null
+  return end - start
 }

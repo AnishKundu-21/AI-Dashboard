@@ -30,7 +30,13 @@ import { HealthCard } from './components/HealthCard'
 import { Toasts, type ToastItem } from './components/Toasts'
 import { Segmented } from './components/Segmented'
 import { IconClose, IconSearch, IconWarning } from './components/Icons'
-import { formatCurrency, formatTokens, pctDelta, relativeTime } from './lib/format'
+import {
+  formatCurrency,
+  formatTokens,
+  pctDelta,
+  relativeTime,
+  setFxRates
+} from './lib/format'
 import { compact } from './lib/chart'
 import { useCollapsedNav, useNow, useTheme } from './lib/hooks'
 
@@ -138,6 +144,8 @@ export default function App() {
         window.api.getSettings(),
         window.api.getCollectorHealth()
       ])
+      // Install the rates main converted with, so both sides agree.
+      setFxRates(ov?.fx?.rates)
       setOverview(ov)
       setQuotas(q)
       setDaily(d)
@@ -360,8 +368,8 @@ export default function App() {
           <strong>{relativeTime(lastSync, now)}</strong>
         </div>
         <div className="context-item">
-          <span>Rate card</span>
-          <strong>{overview?.rate_card_version ?? '—'}</strong>
+          <span>Model prices</span>
+          <strong title={pricingTitle(overview)}>{pricingLabel(overview)}</strong>
         </div>
         <div className="context-item" style={{ marginLeft: 'auto' }}>
           <span>Live quota</span>
@@ -458,7 +466,12 @@ export default function App() {
             <div>
               <h2>Cost equivalent by provider</h2>
               <p>
-                Rate card {overview.rate_card_version}, shown in {currency} via approximate FX.
+                {pricingLabel(overview)} · {fxLabel(overview, currency)}
+                {overview.unpriced_sessions > 0
+                  ? ` · ${overview.unpriced_sessions} session${
+                      overview.unpriced_sessions === 1 ? '' : 's'
+                    } include an unpriced model, so this total is a floor`
+                  : ''}
               </p>
             </div>
             <span className="status plain">
@@ -942,6 +955,34 @@ function Footer() {
       <span>Electron · SQLite · local-first</span>
     </footer>
   )
+}
+
+/**
+ * Says where the prices came from and how current they are, instead of the
+ * static version string a hardcoded rate card used to show.
+ */
+function pricingLabel(overview: OverviewMetrics | null): string {
+  if (!overview) return '—'
+  const { status, known_models } = overview.pricing
+  if (status === 'unavailable') return 'Prices unavailable'
+  return `${known_models.toLocaleString()} models · ${
+    status === 'fresh' ? 'current' : 'cached'
+  }`
+}
+
+function pricingTitle(overview: OverviewMetrics | null): string {
+  if (!overview) return ''
+  const fetched = overview.pricing.fetched_at
+  return `${overview.pricing.source}${fetched ? ` · fetched ${fetched}` : ''}`
+}
+
+function fxLabel(overview: OverviewMetrics, currency: string): string {
+  if (currency.toUpperCase() === 'USD') return 'shown in USD'
+  if (overview.fx.status === 'unavailable' || !overview.fx.rates[currency.toUpperCase()]) {
+    return `no ${currency} rate available, shown in USD`
+  }
+  const asOf = overview.fx.rates_date ? ` as of ${overview.fx.rates_date}` : ''
+  return `shown in ${currency} at ECB rates${asOf}`
 }
 
 function rangeLabel(days: RangeDays): string {

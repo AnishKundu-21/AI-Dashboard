@@ -1,6 +1,6 @@
 import type { AppSettings, ProviderId } from '@shared/types'
 import { PROVIDER_META, PROVIDER_IDS } from '@shared/providers'
-import { CURRENCY_OPTIONS, LOCALE_OPTIONS } from '../lib/format'
+import { CURRENCY_OPTIONS, LOCALE_OPTIONS, availableCurrencies, hasFxRates } from '../lib/format'
 
 const PLAN_PRESETS: Record<ProviderId, string[]> = {
   grok: ['SuperGrok', 'X Premium+', 'Free', 'Custom'],
@@ -25,6 +25,12 @@ interface Props {
 }
 
 export function SettingsPanel({ settings, onChange }: Props) {
+  // Only offer what main can actually convert; before any FX table has
+  // loaded that is the static list, and the note below explains the fallback.
+  const currencyChoices = hasFxRates()
+    ? availableCurrencies()
+    : [...CURRENCY_OPTIONS]
+
   const setPlanMode = async (provider: ProviderId, mode: 'auto' | 'manual') => {
     const current = settings.plans[provider] ?? { mode: 'auto' as const }
     await onChange({
@@ -68,12 +74,18 @@ export function SettingsPanel({ settings, onChange }: Props) {
                 value={settings.display_currency}
                 onChange={(e) => void onChange({ display_currency: e.target.value })}
               >
-                {CURRENCY_OPTIONS.map((c) => (
+                {currencyChoices.map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>
                 ))}
               </select>
+              {!hasFxRates() && settings.display_currency !== 'USD' ? (
+                <p className="field-note">
+                  Exchange rates are unavailable, so amounts are shown in USD
+                  until they load.
+                </p>
+              ) : null}
             </div>
             <div className="field">
               <label htmlFor="locale">Locale</label>

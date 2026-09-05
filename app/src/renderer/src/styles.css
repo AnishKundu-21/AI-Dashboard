@@ -2092,6 +2092,14 @@ td.dim {
   width: 100%;
 }
 
+/* Explains a fallback the control itself cannot show, e.g. FX unavailable. */
+.field-note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

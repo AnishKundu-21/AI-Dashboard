@@ -5,6 +5,7 @@ import { getCodexHome } from '../../util/paths'
 import { readCodexAuth } from './auth'
 import { mapCodexUsage } from './mapUsage'
 import { collectCodexSessions } from './sessions'
+import { getScanCache, markScanCacheDirty } from '../cache'
 import type { QuotaSnapshot } from '../../../shared/types'
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
@@ -73,7 +74,8 @@ export const codexAdapter: ProviderAdapter = {
   },
 
   async collectSessions(_ctx: AdapterContext): Promise<CollectResult> {
-    const sessions = collectCodexSessions(getCodexHome())
+    const sessions = collectCodexSessions(getCodexHome(), getScanCache())
+    markScanCacheDirty()
     return { sessions, upserted: sessions.length }
   }
 }

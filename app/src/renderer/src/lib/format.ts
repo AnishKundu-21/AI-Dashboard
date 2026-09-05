@@ -1,13 +1,29 @@
-/** Renderer formatting. Amounts from main are USD; convert for display currency. */
+/**
+ * Renderer formatting. Amounts from main are USD and converted here for the
+ * display currency.
+ *
+ * Rates are supplied by main (which fetches and caches them) rather than kept
+ * here: this module previously held a second hardcoded FX table that drifted
+ * independently of the one in main, so the same amount could be converted two
+ * different ways depending on which side formatted it.
+ */
 
-const FX_USD_TO: Record<string, number> = {
-  USD: 1,
-  INR: 83.5,
-  EUR: 0.92,
-  GBP: 0.79,
-  JPY: 155,
-  AUD: 1.53,
-  CAD: 1.37
+let fxRates: Record<string, number> = { USD: 1 }
+let fxAvailable = false
+
+/** Called whenever an overview response arrives, with the rates main used. */
+export function setFxRates(rates: Record<string, number> | undefined): void {
+  fxRates = { USD: 1, ...(rates ?? {}) }
+  fxAvailable = Object.keys(fxRates).length > 1
+}
+
+export function hasFxRates(): boolean {
+  return fxAvailable
+}
+
+/** Currencies that can actually be converted right now, USD always included. */
+export function availableCurrencies(): string[] {
+  return ['USD', ...Object.keys(fxRates).filter((code) => code !== 'USD').sort()]
 }
 
 export function formatTokens(n: number): string {
@@ -16,19 +32,28 @@ export function formatTokens(n: number): string {
   return String(Math.round(n))
 }
 
+/**
+ * Formats a USD amount in the display currency.
+ *
+ * With no rate for the requested currency the amount is shown in USD rather
+ * than converted at 1:1 — a dollar figure behind a rupee sign is a wrong
+ * number, not a formatting nicety.
+ */
 export function formatCurrency(
   amountUsd: number,
   currency = 'USD',
   locale = 'en-US'
 ): string {
-  const cur = currency.toUpperCase()
-  const rate = FX_USD_TO[cur] ?? 1
-  const value = amountUsd * rate
+  const requested = currency.toUpperCase()
+  const rate = fxRates[requested]
+  const usable = typeof rate === 'number' && rate > 0
+  const code = usable ? requested : 'USD'
+  const value = usable ? amountUsd * rate : amountUsd
   try {
     return new Intl.NumberFormat(locale, {
       style: 'currency',
-      currency: cur,
-      maximumFractionDigits: cur === 'JPY' ? 0 : 2
+      currency: code,
+      maximumFractionDigits: code === 'JPY' ? 0 : 2
     }).format(value)
   } catch {
     return `$${amountUsd.toFixed(2)}`
@@ -81,6 +106,10 @@ export function confidenceBadge(
   return { label: 'Unknown', className: 'plain' }
 }
 
+/**
+ * Offered before any FX table has loaded. The Settings panel narrows this to
+ * `availableCurrencies()` once main reports what it can actually convert.
+ */
 export const CURRENCY_OPTIONS = [
   'USD',
   'INR',

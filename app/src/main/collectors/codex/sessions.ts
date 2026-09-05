@@ -1,187 +1,160 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
+import { existsSync, readdirSync } from 'fs'
 import { join } from 'path'
-import type { SessionRow } from '../../../shared/types'
+import type { SessionRow, UsageEvent } from '../../../shared/types'
 import { projectNameFromCwd } from '../../util/project'
-import { apiEquivUsd } from '../../pricing/rates'
 import { getCodexHome } from '../../util/paths'
-import { dominantModel } from '../models'
-
-const MAX_FILES = 80
+import { dedupeEvents, eventsToSessionRows, type SessionFacts } from '../aggregate'
+import {
+  readCached,
+  splitLines,
+  type ParseChunk,
+  type ParseOutput,
+  type ScanCache
+} from '../scanCache'
+import {
+  CODEX_SOURCE,
+  initialCodexScanState,
+  mightCarryCodexUsage,
+  parseCodexLine,
+  type CodexScanState
+} from './parse'
 
 /**
- * Parse Codex rollout JSONL files for metadata + token totals.
- * Never stores message/prompt content.
+ * Parses one chunk of a Codex rollout.
+ *
+ * Unlike Claude's, this parser carries state across lines — the current model,
+ * the fork-suppression window, the duplicate-event signature — so the cache
+ * stores that state at the resume offset and hands it back on the next scan.
  */
-export function collectCodexSessions(home = getCodexHome()): SessionRow[] {
+function parseChunk(chunk: ParseChunk<CodexScanState>): ParseOutput<CodexScanState> {
+  const split = splitLines(chunk.text)
+  const state = chunk.state
+    ? { ...chunk.state }
+    : initialCodexScanState()
+  const events: UsageEvent[] = []
+  const tailEvents: UsageEvent[] = []
+
+  for (const line of split.lines) {
+    if (!mightCarryCodexUsage(line)) continue
+    const event = parseCodexLine(line, state)
+    if (event) events.push(event)
+  }
+
+  // The unterminated tail is parsed against a copy: it will be re-read once the
+  // writer finishes the line, and must not advance the persisted state.
+  if (split.tail.trim() && mightCarryCodexUsage(split.tail)) {
+    const tailState = { ...state }
+    const event = parseCodexLine(split.tail, tailState)
+    if (event) tailEvents.push(event)
+  }
+
+  return {
+    events,
+    tail_events: tailEvents,
+    facts: {
+      session_id: state.session_id,
+      cwd: state.cwd,
+      started_at_ms: state.started_at_ms,
+      ended_at_ms: state.ended_at_ms,
+      duration_ms: state.duration_ms,
+      status_complete: state.status_complete
+    },
+    state,
+    consumed: split.consumed
+  }
+}
+
+interface CodexFileFacts {
+  session_id: string
+  cwd: string | null
+  started_at_ms: number | null
+  ended_at_ms: number | null
+  duration_ms: number | null
+  status_complete: boolean
+}
+
+/**
+ * Scans every Codex rollout on disk.
+ *
+ * The previous implementation read the newest 80 files in full on every scan
+ * and cached nothing, so an active session re-read them all each time a
+ * watcher fired.
+ */
+export function collectCodexSessions(
+  home = getCodexHome(),
+  cache: ScanCache = new Map()
+): SessionRow[] {
   const sessionsDir = join(home, 'sessions')
   if (!existsSync(sessionsDir)) return []
 
-  const files = listJsonlFiles(sessionsDir)
-    .map((p) => ({ path: p, mtime: safeMtime(p) }))
-    .sort((a, b) => b.mtime - a.mtime)
-    .slice(0, MAX_FILES)
+  const events: UsageEvent[] = []
+  const facts: SessionFacts[] = []
+  const seen = new Set<string>()
 
-  const out: SessionRow[] = []
-  for (const f of files) {
-    const row = parseSessionFile(f.path)
-    if (row) out.push(row)
+  for (const path of listJsonlFiles(sessionsDir)) {
+    const result = readCached<CodexScanState>(cache, path, 'codex', parseChunk)
+    if (!result) continue
+
+    const fileFacts = result.facts as CodexFileFacts | undefined
+    const sessionId = fileFacts?.session_id || fallbackSessionId(path)
+    if (!sessionId || seen.has(sessionId)) {
+      events.push(...result.events)
+      continue
+    }
+    seen.add(sessionId)
+
+    events.push(...result.events)
+    facts.push({
+      id: `codex:${sessionId}`,
+      provider: 'codex',
+      project: projectNameFromCwd(fileFacts?.cwd ?? null),
+      status: fileFacts?.status_complete ? 'complete' : 'unknown',
+      started_at: isoOrNull(fileFacts?.started_at_ms ?? null),
+      ended_at: isoOrNull(fileFacts?.ended_at_ms ?? null),
+      duration_ms:
+        fileFacts?.duration_ms ??
+        durationBetween(
+          fileFacts?.started_at_ms ?? null,
+          fileFacts?.ended_at_ms ?? null
+        ),
+      source: CODEX_SOURCE
+    })
   }
-  return out
+
+  const { events: unique } = dedupeEvents(events)
+  return eventsToSessionRows(unique, facts).filter((row) => row.tokens_total != null)
 }
 
-function listJsonlFiles(dir: string): string[] {
-  const results: string[] = []
-  const walk = (d: string): void => {
-    let entries: string[]
+function fallbackSessionId(path: string): string {
+  const base = path.split(/[/\\]/).pop() ?? ''
+  const match = base.match(/([0-9a-f]{8}-[0-9a-f-]{27,})/i)
+  return match?.[1] ?? base.replace(/\.jsonl$/i, '')
+}
+
+function listJsonlFiles(root: string): string[] {
+  const output: string[] = []
+  const walk = (dir: string): void => {
+    let entries: import('fs').Dirent[]
     try {
-      entries = readdirSync(d)
+      entries = readdirSync(dir, { withFileTypes: true }) as import('fs').Dirent[]
     } catch {
       return
     }
-    for (const name of entries) {
-      const full = join(d, name)
-      let st
-      try {
-        st = statSync(full)
-      } catch {
-        continue
-      }
-      if (st.isDirectory()) walk(full)
-      else if (name.endsWith('.jsonl')) results.push(full)
+    for (const entry of entries) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (entry.name.endsWith('.jsonl')) output.push(path)
     }
   }
-  walk(dir)
-  return results
+  walk(root)
+  return output
 }
 
-function safeMtime(p: string): number {
-  try {
-    return statSync(p).mtimeMs
-  } catch {
-    return 0
-  }
+function isoOrNull(ms: number | null): string | null {
+  return ms === null ? null : new Date(ms).toISOString()
 }
 
-function parseSessionFile(path: string): SessionRow | null {
-  let text: string
-  try {
-    text = readFileSync(path, 'utf-8')
-  } catch {
-    return null
-  }
-
-  let sessionId: string | null = null
-  let cwd: string | null = null
-  let startedAt: string | null = null
-  let endedAt: string | null = null
-  const observedModels: string[] = []
-  let tokensIn: number | null = null
-  let tokensOut: number | null = null
-  let tokensTotal: number | null = null
-  let tokensCached: number | null = null
-  let tokensReasoning: number | null = null
-  let durationMs: number | null = null
-  let status: SessionRow['status'] = 'unknown'
-
-  const lines = text.split(/\r?\n/)
-  for (const line of lines) {
-    if (!line.trim()) continue
-    let obj: Record<string, unknown>
-    try {
-      obj = JSON.parse(line) as Record<string, unknown>
-    } catch {
-      continue
-    }
-
-    const type = obj.type
-    const payload =
-      obj.payload && typeof obj.payload === 'object'
-        ? (obj.payload as Record<string, unknown>)
-        : null
-
-    if (type === 'session_meta' && payload) {
-      if (typeof payload.session_id === 'string') sessionId = payload.session_id
-      else if (typeof payload.id === 'string') sessionId = payload.id
-      if (typeof payload.cwd === 'string') cwd = payload.cwd
-      if (typeof payload.timestamp === 'string') startedAt = payload.timestamp
-      else if (typeof obj.timestamp === 'string') startedAt = obj.timestamp
-    }
-
-    if (type === 'turn_context' && payload) {
-      if (typeof payload.model === 'string' && payload.model) {
-        observedModels.push(payload.model)
-      }
-      if (typeof payload.cwd === 'string') cwd = payload.cwd
-    }
-
-    if (type === 'event_msg' && payload) {
-      const subtype = payload.type
-      if (subtype === 'token_count') {
-        const info =
-          payload.info && typeof payload.info === 'object'
-            ? (payload.info as Record<string, unknown>)
-            : null
-        const total =
-          info?.total_token_usage && typeof info.total_token_usage === 'object'
-            ? (info.total_token_usage as Record<string, unknown>)
-            : null
-        if (total) {
-          if (typeof total.input_tokens === 'number') tokensIn = total.input_tokens
-          if (typeof total.output_tokens === 'number') tokensOut = total.output_tokens
-          if (typeof total.total_tokens === 'number') tokensTotal = total.total_tokens
-          const cached = numberOrNull(total.cached_input_tokens)
-          const cacheWrite = numberOrNull(total.cache_write_input_tokens)
-          tokensCached =
-            cached != null || cacheWrite != null
-              ? (cached ?? 0) + (cacheWrite ?? 0)
-              : null
-          tokensReasoning = numberOrNull(total.reasoning_output_tokens)
-        }
-      }
-      if (subtype === 'task_complete') {
-        status = 'complete'
-        if (typeof payload.duration_ms === 'number') durationMs = payload.duration_ms
-        if (typeof payload.completed_at === 'string') endedAt = payload.completed_at
-        if (typeof payload.started_at === 'string' && !startedAt) {
-          startedAt = payload.started_at
-        }
-      }
-    }
-  }
-
-  if (!sessionId) {
-    // fallback: filename
-    const base = path.split(/[/\\]/).pop() ?? ''
-    const m = base.match(/([0-9a-f]{8}-[0-9a-f-]{27,})/i)
-    sessionId = m?.[1] ?? base.replace(/\.jsonl$/, '')
-  }
-
-  const model = dominantModel('codex', observedModels) ?? 'Unknown'
-
-  return {
-    id: `codex:${sessionId}`,
-    provider: 'codex',
-    project: projectNameFromCwd(cwd),
-    model,
-    tokens_in: tokensIn,
-    tokens_out: tokensOut,
-    tokens_total: tokensTotal,
-    tokens_cached: tokensCached,
-    tokens_reasoning: tokensReasoning,
-    model_calls: null,
-    api_equiv_usd: apiEquivUsd(model, tokensTotal),
-    provider_cost_usd: null,
-    api_duration_ms: null,
-    duration_ms: durationMs,
-    status,
-    started_at: startedAt,
-    ended_at: endedAt,
-    source: 'codex:sessions.jsonl'
-  }
-}
-
-function numberOrNull(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : null
+function durationBetween(start: number | null, end: number | null): number | null {
+  if (start === null || end === null || end < start) return null
+  return end - start
 }

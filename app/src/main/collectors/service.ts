@@ -14,6 +14,9 @@ import type { QuotaSnapshot } from '../../shared/types'
 import type { AdapterContext } from './base'
 import { getAdapter, listAdapters, registerDefaultAdapters } from './registry'
 import { getClaudeHome, getCodexHome, getGrokHome } from '../util/paths'
+import { ensureRates, setPriceOverrides } from '../pricing/store'
+import { ensureFxRates } from '../pricing/fx'
+import { flushScanCache } from './cache'
 import type { ProviderId } from '../../shared/providers'
 
 let registered = false
@@ -145,6 +148,7 @@ export async function collectAllSessions(): Promise<{ upserted: number }> {
     networkQuotaRefresh: settings.network_quota_refresh,
     settings
   }
+  await ensurePricing(settings.network_quota_refresh, settings.price_overrides)
 
   let upserted = 0
   for (const adapter of listAdapters()) {
@@ -169,8 +173,26 @@ export async function collectAllSessions(): Promise<{ upserted: number }> {
     }
   }
 
+  flushScanCache()
   broadcastChanged()
   return { upserted }
+}
+
+/**
+ * Makes sure a rate table and FX table are loaded before any event is priced.
+ *
+ * Both fall back to their on-disk snapshots, so this stays useful when the
+ * user has turned network refresh off — it simply will not fetch.
+ */
+async function ensurePricing(
+  allowNetwork: boolean,
+  overrides: Record<string, unknown> | undefined
+): Promise<void> {
+  setPriceOverrides(overrides as never)
+  await Promise.all([
+    ensureRates({ allowNetwork }).catch(() => undefined),
+    ensureFxRates({ allowNetwork }).catch(() => undefined)
+  ])
 }
 
 export async function collectProviderSessions(
@@ -185,6 +207,7 @@ export async function collectProviderSessions(
     networkQuotaRefresh: settings.network_quota_refresh,
     settings
   }
+  await ensurePricing(settings.network_quota_refresh, settings.price_overrides)
   const started = Date.now()
   const scannedAt = new Date().toISOString()
   try {

@@ -6,6 +6,7 @@ import { readClaudeAuth, isClaudeTokenExpired } from './auth'
 import { mapClaudeUsage } from './mapUsage'
 import { collectClaudeSessions } from './sessions'
 import { resolvePlan } from '../plan'
+import { getScanCache, markScanCacheDirty } from '../cache'
 import type { QuotaSnapshot } from '../../../shared/types'
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
@@ -77,7 +78,8 @@ export const claudeAdapter: ProviderAdapter = {
   },
 
   async collectSessions(_ctx: AdapterContext): Promise<CollectResult> {
-    const sessions = collectClaudeSessions(getClaudeHome())
+    const sessions = collectClaudeSessions(getClaudeHome(), getScanCache())
+    markScanCacheDirty()
     return { sessions, upserted: sessions.length }
   }
 }

@@ -13,6 +13,7 @@ import {
 } from './collectors/service'
 import { getAppDataDir, getLogsDir } from './util/paths'
 import { applyRetention } from './db/retention'
+import { flushScanCache } from './collectors/cache'
 
 const windowIcon = join(__dirname, '../../resources/icon.png')
 
@@ -134,6 +135,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     stopQuotaPolling()
     stopRealtimeWatchers()
+    flushScanCache(true)
     closeDatabase()
     app.quit()
   }
@@ -142,5 +144,8 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   stopQuotaPolling()
   stopRealtimeWatchers()
+  // Force the flush so the next launch resumes from the cache rather than
+  // re-parsing the whole transcript history.
+  flushScanCache(true)
   closeDatabase()
 })

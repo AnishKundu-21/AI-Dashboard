@@ -58,12 +58,14 @@ export function upsertSessions(
     INSERT INTO sessions (
       id, provider, project, model, tokens_in, tokens_out, tokens_total,
       tokens_cached, tokens_reasoning, model_calls, api_equiv_usd,
-      provider_cost_usd, api_duration_ms, duration_ms, status, started_at,
+      provider_cost_usd, api_duration_ms, cache_savings_usd, unpriced,
+      duration_ms, status, started_at,
       ended_at, source, machine_id, created_at
     ) VALUES (
       @id, @provider, @project, @model, @tokens_in, @tokens_out, @tokens_total,
       @tokens_cached, @tokens_reasoning, @model_calls, @api_equiv_usd,
-      @provider_cost_usd, @api_duration_ms, @duration_ms, @status, @started_at,
+      @provider_cost_usd, @api_duration_ms, @cache_savings_usd, @unpriced,
+      @duration_ms, @status, @started_at,
       @ended_at, @source, @machine_id, @created_at
     )
     ON CONFLICT(id) DO UPDATE SET
@@ -78,6 +80,9 @@ export function upsertSessions(
       api_equiv_usd = COALESCE(excluded.api_equiv_usd, sessions.api_equiv_usd),
       provider_cost_usd = COALESCE(excluded.provider_cost_usd, sessions.provider_cost_usd),
       api_duration_ms = COALESCE(excluded.api_duration_ms, sessions.api_duration_ms),
+      cache_savings_usd = COALESCE(excluded.cache_savings_usd, sessions.cache_savings_usd),
+      -- A rescan is authoritative about whether a model could be priced.
+      unpriced = excluded.unpriced,
       duration_ms = COALESCE(excluded.duration_ms, sessions.duration_ms),
       status = excluded.status,
       started_at = COALESCE(excluded.started_at, sessions.started_at),
@@ -114,6 +119,8 @@ export function upsertSessions(
         api_equiv_usd: s.api_equiv_usd,
         provider_cost_usd: s.provider_cost_usd ?? null,
         api_duration_ms: s.api_duration_ms ?? null,
+        cache_savings_usd: s.cache_savings_usd ?? null,
+        unpriced: s.unpriced ? 1 : 0,
         duration_ms: s.duration_ms,
         status: s.status,
         started_at: s.started_at,

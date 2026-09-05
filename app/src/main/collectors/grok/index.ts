@@ -5,6 +5,7 @@ import { getGrokHome } from '../../util/paths'
 import { readGrokAuth, isGrokTokenExpired } from './auth'
 import { mapGrokBilling } from './mapBilling'
 import { collectGrokSessions } from './sessions'
+import { getScanCache, markScanCacheDirty } from '../cache'
 import type { QuotaSnapshot } from '../../../shared/types'
 
 const BILLING_URL =
@@ -64,7 +65,8 @@ export const grokAdapter: ProviderAdapter = {
   },
 
   async collectSessions(_ctx: AdapterContext): Promise<CollectResult> {
-    const sessions = collectGrokSessions(getGrokHome())
+    const sessions = collectGrokSessions(getGrokHome(), getScanCache())
+    markScanCacheDirty()
     return { sessions, upserted: sessions.length }
   }
 }

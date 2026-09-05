@@ -17,7 +17,9 @@ import type {
 import { AppSettingsSchema } from '../../shared/types'
 import { buildBurnSeries } from '../analytics/burn'
 import { buildProjectionCard } from '../analytics/projections'
-import { RATE_CARD_VERSION } from '../pricing/rates'
+import { pricingInfo } from '../pricing/store'
+import { fxInfo } from '../pricing/fx'
+import { dayInZone as dayInZoneMs, rangeStartMs } from '../util/time'
 import { normalizeModelName } from '../collectors/models'
 
 type ProviderFilter = ProviderId | 'all'
@@ -26,50 +28,18 @@ function providerClause(provider: ProviderFilter, column = 'provider'): string {
   return provider === 'all' ? '1=1' : `${column} = @provider`
 }
 
+/**
+ * Range and day arithmetic now live in `util/time`, which is unit-tested
+ * against half-hour offsets and DST boundaries.
+ */
 function rangeStart(rangeDays: RangeDays, timezone = 'system'): Date | null {
-  if (rangeDays === 0) return null
-  const zone = timezone === 'system'
-    ? Intl.DateTimeFormat().resolvedOptions().timeZone
-    : timezone
-  const nowParts = dateParts(new Date(), zone)
-  const targetWallClock = new Date(
-    Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day - (rangeDays - 1))
-  )
-  let candidate = new Date(targetWallClock.getTime() - zoneOffset(targetWallClock, zone))
-  candidate = new Date(targetWallClock.getTime() - zoneOffset(candidate, zone))
-  return candidate
-}
-
-function dateParts(date: Date, timeZone: string): { year: number; month: number; day: number } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(date)
-  const value = (type: string) => Number(parts.find((p) => p.type === type)?.value)
-  return { year: value('year'), month: value('month'), day: value('day') }
-}
-
-function zoneOffset(date: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
-  }).formatToParts(date)
-  const value = (type: string) => Number(parts.find((p) => p.type === type)?.value)
-  return Date.UTC(
-    value('year'), value('month') - 1, value('day'), value('hour'),
-    value('minute'), value('second')
-  ) - date.getTime()
+  const ms = rangeStartMs(rangeDays, timezone)
+  return ms === null ? null : new Date(ms)
 }
 
 function dayInZone(iso: string, timezone: string): string {
-  const zone = timezone === 'system'
-    ? Intl.DateTimeFormat().resolvedOptions().timeZone
-    : timezone
-  const { year, month, day } = dateParts(new Date(iso), zone)
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  const ms = Date.parse(iso)
+  return Number.isNaN(ms) ? iso.slice(0, 10) : dayInZoneMs(ms, timezone)
 }
 
 function inclusiveDaysSince(day: string | null): number {
@@ -238,11 +208,26 @@ export function getOverview(
          COALESCE(SUM(tokens_cached), 0) AS cached,
          COALESCE(SUM(tokens_reasoning), 0) AS reasoning,
          COALESCE(SUM(model_calls), 0) AS model_calls
+         -- input is uncached input; cached covers both reads and writes
        FROM sessions
        WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
          AND ${providerClause(provider)}`
     )
     .get({ sinceIso, provider }) as OverviewMetrics['token_breakdown']
+
+  const quality = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(cache_savings_usd), 0) AS cache_savings_usd,
+         COALESCE(SUM(CASE WHEN unpriced = 1 THEN 1 ELSE 0 END), 0) AS unpriced_sessions
+       FROM sessions
+       WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+         AND ${providerClause(provider)}`
+    )
+    .get({ sinceIso, provider }) as {
+    cache_savings_usd: number
+    unpriced_sessions: number
+  }
 
   const averageDays = rangeDays === 0
     ? inclusiveDaysSince(row.min_started_at?.slice(0, 10) ?? null)
@@ -256,7 +241,10 @@ export function getOverview(
     avg_daily_tokens: row.tokens_total / averageDays,
     token_breakdown: breakdown,
     by_provider: byProviderRows,
-    rate_card_version: RATE_CARD_VERSION
+    cache_savings_usd: quality.cache_savings_usd,
+    unpriced_sessions: quality.unpriced_sessions,
+    pricing: pricingInfo(),
+    fx: fxInfo()
   }
 }
 
@@ -322,7 +310,8 @@ export function getSessions(
   let sql = `
     SELECT id, provider, project, model, tokens_in, tokens_out, tokens_total,
            tokens_cached, tokens_reasoning, model_calls, api_equiv_usd,
-           provider_cost_usd, api_duration_ms, duration_ms, status,
+           provider_cost_usd, api_duration_ms, cache_savings_usd,
+           unpriced, duration_ms, status,
            started_at, ended_at, source
     FROM sessions
     WHERE (@sinceIso IS NULL OR (started_at IS NOT NULL AND started_at >= @sinceIso))
@@ -356,10 +345,13 @@ export function getSessions(
   params.offset = Math.max(options.offset ?? 0, 0)
   sql += ` ORDER BY ${sortBy} ${sortDir}, id ASC LIMIT @limit OFFSET @offset`
 
-  const rows = db.prepare(sql).all(params) as SessionRow[]
+  const rows = db.prepare(sql).all(params) as Array<
+    SessionRow & { unpriced: number | boolean }
+  >
   return rows.map((row) => ({
     ...row,
-    model: normalizeModelName(row.provider, row.model) ?? 'Unknown'
+    model: normalizeModelName(row.provider, row.model) ?? 'Unknown',
+    unpriced: Boolean(row.unpriced)
   }))
 }
 
@@ -591,7 +583,8 @@ export function exportAsJson(
     filter: { provider, range_days: rangeDays },
     currency: settings.display_currency,
     locale: settings.locale,
-    rate_card_version: RATE_CARD_VERSION,
+    pricing: pricingInfo(),
+    fx: fxInfo(),
     overview: getOverview(db, provider, rangeDays),
     quotas: getLatestQuotas(db).filter(
       (q) => provider === 'all' || q.provider === provider

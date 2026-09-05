@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { PROVIDER_IDS } from './providers'
+import { TokenTotalsSchema } from './tokens'
 
 export const ProviderIdSchema = z.enum(PROVIDER_IDS)
 export type ProviderId = z.infer<typeof ProviderIdSchema>
@@ -40,6 +41,35 @@ export const PlanConfigSchema = z.object({
 })
 export type PlanConfig = z.infer<typeof PlanConfigSchema>
 
+/** User-entered model prices, in USD per million tokens as vendors quote them. */
+export const ModelPriceOverrideSchema = z.object({
+  input_per_million: z.number().nonnegative(),
+  output_per_million: z.number().nonnegative(),
+  cache_read_per_million: z.number().nonnegative().optional(),
+  cache_write_per_million: z.number().nonnegative().optional()
+})
+export type ModelPriceOverride = z.infer<typeof ModelPriceOverrideSchema>
+
+/** Provenance of the rate table the displayed costs were computed from. */
+export const PricingInfoSchema = z.object({
+  status: z.enum(['fresh', 'cached', 'unavailable']),
+  source: z.string(),
+  fetched_at: z.string().nullable(),
+  known_models: z.number()
+})
+export type PricingInfo = z.infer<typeof PricingInfoSchema>
+
+/** Provenance of the FX rates, so converted money can say how current it is. */
+export const FxInfoSchema = z.object({
+  status: z.enum(['fresh', 'cached', 'unavailable']),
+  source: z.string(),
+  fetched_at: z.string().nullable(),
+  rates_date: z.string().nullable(),
+  currencies: z.array(z.string()),
+  rates: z.record(z.string(), z.number())
+})
+export type FxInfo = z.infer<typeof FxInfoSchema>
+
 export const AppSettingsSchema = z.object({
   display_currency: z.string().default('USD'),
   locale: z.string().default('en-US'),
@@ -47,6 +77,8 @@ export const AppSettingsSchema = z.object({
   notify_enabled: z.boolean().default(true),
   network_quota_refresh: z.boolean().default(true),
   retention_days: z.number().int().positive().default(90),
+  /** Per-model price overrides, keyed by the exact provider model id. */
+  price_overrides: z.record(z.string(), ModelPriceOverrideSchema).default({}),
   plans: z
     .record(ProviderIdSchema, PlanConfigSchema)
     .default({
@@ -86,6 +118,29 @@ export const QuotaSnapshotSchema = z.object({
 })
 export type QuotaSnapshot = z.infer<typeof QuotaSnapshotSchema>
 
+export const UsageEventSchema = z.object({
+  /**
+   * Globally unique and stable across rescans, so re-reading a transcript
+   * upserts the same row instead of adding a second one.
+   */
+  dedupe_key: z.string(),
+  provider: ProviderIdSchema,
+  session_id: z.string(),
+  project: z.string(),
+  /**
+   * The raw provider model id, not a normalised display name: it is the key
+   * the rate table is looked up by, and normalising first would lose the
+   * version suffix that distinguishes two differently priced releases.
+   */
+  model: z.string(),
+  ts_ms: z.number(),
+  tokens: TokenTotalsSchema,
+  /** Cost the provider itself reported, when it reports one. */
+  reported_cost_usd: z.number().nullable(),
+  source: z.string()
+})
+export type UsageEvent = z.infer<typeof UsageEventSchema>
+
 export const SessionRowSchema = z.object({
   id: z.string(),
   provider: ProviderIdSchema,
@@ -100,6 +155,16 @@ export const SessionRowSchema = z.object({
   api_equiv_usd: z.number().nullable(),
   provider_cost_usd: z.number().nullable().optional(),
   api_duration_ms: z.number().nullable().optional(),
+  /**
+   * The canonical four-class split. `tokens_in` / `tokens_cached` and friends
+   * above are flattened views of this, kept so existing consumers keep
+   * working; anything doing arithmetic should read this instead.
+   */
+  tokens: TokenTotalsSchema.optional(),
+  /** What prompt caching saved against the full input rate, in USD. */
+  cache_savings_usd: z.number().nullable().optional(),
+  /** True when no rate was found for the model, so `api_equiv_usd` is null. */
+  unpriced: z.boolean().optional(),
   duration_ms: z.number().nullable(),
   status: SessionStatusSchema,
   started_at: z.string().nullable(),
@@ -143,7 +208,12 @@ export const OverviewMetricsSchema = z.object({
     model_calls: z.number()
   }),
   by_provider: z.array(ProviderCostSchema),
-  rate_card_version: z.string()
+  /** What prompt caching saved against full input rates, over the window. */
+  cache_savings_usd: z.number(),
+  /** Sessions containing at least one event whose model had no known rate. */
+  unpriced_sessions: z.number(),
+  pricing: PricingInfoSchema,
+  fx: FxInfoSchema
 })
 export type OverviewMetrics = z.infer<typeof OverviewMetricsSchema>
 

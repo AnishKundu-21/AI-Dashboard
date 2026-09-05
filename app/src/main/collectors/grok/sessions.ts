@@ -1,18 +1,21 @@
-import {
-  existsSync,
-  readFileSync,
-  readdirSync,
-  statSync
-} from 'fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { basename, join } from 'path'
 import Database from 'better-sqlite3'
-import type { SessionRow } from '../../../shared/types'
+import type { SessionRow, UsageEvent } from '../../../shared/types'
 import { projectNameFromCwd } from '../../util/project'
 import { getGrokHome } from '../../util/paths'
-import { apiEquivUsd } from '../../pricing/rates'
-import { dominantModel, normalizeModelName } from '../models'
+import { dedupeEvents, eventsToSessionRows, type SessionFacts } from '../aggregate'
+import {
+  readCached,
+  splitLines,
+  type ParseChunk,
+  type ParseOutput,
+  type ScanCache
+} from '../scanCache'
+import { GROK_SOURCE, mightCarryGrokUsage, parseGrokLine } from './parse'
 
-const MAX_SESSIONS = 250
+/** Only bounds the sqlite index read; the transcript scan itself is unbounded. */
+const MAX_INDEXED = 1000
 
 interface SessionDocRow {
   session_id: string
@@ -20,55 +23,78 @@ interface SessionDocRow {
   updated_at: number | string | null
 }
 
-export interface GrokUsageTotals {
-  tokensIn: number | null
-  tokensOut: number | null
-  tokensTotal: number | null
-  tokensCached: number | null
-  tokensReasoning: number | null
-  modelCalls: number | null
-  model: string | null
-  apiDurationMs: number | null
-  providerCostUsd: number | null
+interface GrokFileFacts {
+  api_duration_ms: number
+  model_calls: number
 }
 
-interface CachedUsage {
-  size: number
-  mtimeMs: number
-  value: GrokUsageTotals
-}
+function parseChunk(sessionId: string): (
+  chunk: ParseChunk<GrokFileFacts>
+) => ParseOutput<GrokFileFacts> {
+  return (chunk) => {
+    const split = splitLines(chunk.text)
+    const facts: GrokFileFacts = chunk.state
+      ? { ...chunk.state }
+      : { api_duration_ms: 0, model_calls: 0 }
+    const events: UsageEvent[] = []
+    const tailEvents: UsageEvent[] = []
 
-const usageCache = new Map<string, CachedUsage>()
+    for (const line of split.lines) {
+      if (!mightCarryGrokUsage(line)) continue
+      const parsed = parseGrokLine(line, sessionId)
+      events.push(...parsed.events)
+      facts.api_duration_ms += parsed.extras.api_duration_ms
+      facts.model_calls += parsed.extras.model_calls
+    }
+
+    if (split.tail.trim() && mightCarryGrokUsage(split.tail)) {
+      tailEvents.push(...parseGrokLine(split.tail, sessionId).events)
+    }
+
+    return {
+      events,
+      tail_events: tailEvents,
+      facts,
+      state: facts,
+      consumed: split.consumed
+    }
+  }
+}
 
 /**
- * Collect Grok metadata from session summaries and usage-only fields in
- * updates.jsonl. Prompt and response fields are never returned or persisted.
+ * Collects Grok metadata from session summaries plus usage from each session's
+ * `updates.jsonl`. Prompt and response fields are never read or returned.
  */
-export function collectGrokSessions(home = getGrokHome()): SessionRow[] {
+export function collectGrokSessions(
+  home = getGrokHome(),
+  cache: ScanCache = new Map()
+): SessionRow[] {
   const sessionsRoot = join(home, 'sessions')
   if (!existsSync(sessionsRoot)) return []
 
   const active = readActiveSessions(home)
   const indexed = readIndexedSessions(sessionsRoot)
-  const rows: SessionRow[] = []
+  const events: UsageEvent[] = []
+  const facts: SessionFacts[] = []
   const seen = new Set<string>()
 
-  const dirs = listSessionDirectories(sessionsRoot)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, MAX_SESSIONS)
-
-  for (const entry of dirs) {
+  for (const entry of listSessionDirectories(sessionsRoot)) {
     const summary = readJsonObject(join(entry.path, 'summary.json'))
     if (!summary) continue
     const info = asRecord(summary.info)
     const id = stringValue(info?.id) ?? basename(entry.path)
     if (!id || seen.has(id)) continue
+    seen.add(id)
 
     const updatesPath = join(entry.path, 'updates.jsonl')
-    const usage = readUsageFile(updatesPath)
-    // Summary/index shells contain no measured usage and previously polluted
-    // totals/session tables with zero-value records.
-    if (usage.tokensTotal == null) continue
+    const result = existsSync(updatesPath)
+      ? readCached<GrokFileFacts>(cache, updatesPath, 'grok', parseChunk(id))
+      : null
+    if (!result || result.events.length === 0) continue
+
+    events.push(...result.events)
+
+    const fileFacts = result.facts as GrokFileFacts | undefined
     const cwd =
       stringValue(info?.cwd) ??
       stringValue(summary.git_root_dir) ??
@@ -85,141 +111,26 @@ export function collectGrokSessions(home = getGrokHome()): SessionRow[] {
       isoTimestamp(summary.updated_at) ??
       indexed.get(id)?.updated_at ??
       startedAt
-    const summaryModel = normalizeModelName(
-      'grok',
-      summary.current_model_id
-    )
-    const model = usage.model ?? summaryModel ?? 'Grok'
-    const durationMs = durationBetween(startedAt, endedAt) ?? usage.apiDurationMs
+    const isActive = active.has(id)
 
-    seen.add(id)
-    rows.push({
+    facts.push({
       id: `grok:${id}`,
       provider: 'grok',
       project: projectNameFromCwd(cwd),
-      model,
-      tokens_in: usage.tokensIn,
-      tokens_out: usage.tokensOut,
-      tokens_total: usage.tokensTotal,
-      tokens_cached: usage.tokensCached,
-      tokens_reasoning: usage.tokensReasoning,
-      model_calls: usage.modelCalls,
-      api_equiv_usd: apiEquivUsd(model, usage.tokensTotal),
-      provider_cost_usd: usage.providerCostUsd,
-      api_duration_ms: usage.apiDurationMs,
-      duration_ms: durationMs,
-      status: active.has(id) ? 'unknown' : 'complete',
+      status: isActive ? 'unknown' : 'complete',
       started_at: startedAt,
-      ended_at: active.has(id) ? null : endedAt,
-      source: 'grok:session-files'
+      ended_at: isActive ? null : endedAt,
+      duration_ms:
+        durationBetween(startedAt, endedAt) ??
+        (fileFacts?.api_duration_ms || null),
+      api_duration_ms: fileFacts?.api_duration_ms || null,
+      model_calls: fileFacts?.model_calls || null,
+      source: GROK_SOURCE
     })
   }
 
-  return rows
-}
-
-/** Parse and aggregate only Grok's structured usage objects. */
-export function parseGrokUsageUpdates(text: string): GrokUsageTotals {
-  let tokensIn = 0
-  let tokensOut = 0
-  let tokensTotal = 0
-  let apiDurationMs = 0
-  let tokensCached = 0
-  let tokensReasoning = 0
-  let modelCalls = 0
-  let providerCostTicks = 0
-  let foundUsage = false
-  const observedModels: string[] = []
-
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    let root: Record<string, unknown>
-    try {
-      root = JSON.parse(line) as Record<string, unknown>
-    } catch {
-      continue
-    }
-    const params = asRecord(root.params)
-    const update = asRecord(params?.update)
-    const usage = asRecord(update?.usage)
-    if (!usage) continue
-
-    const input = finiteNumber(usage.inputTokens)
-    const output = finiteNumber(usage.outputTokens)
-    const total = finiteNumber(usage.totalTokens)
-    if (input == null && output == null && total == null) continue
-
-    foundUsage = true
-    tokensIn += input ?? 0
-    tokensOut += output ?? 0
-    tokensTotal += total ?? (input ?? 0) + (output ?? 0)
-    apiDurationMs += finiteNumber(usage.apiDurationMs) ?? 0
-    tokensCached += finiteNumber(usage.cachedReadTokens) ?? 0
-    tokensReasoning += finiteNumber(usage.reasoningTokens) ?? 0
-    const topLevelCalls = finiteNumber(usage.modelCalls)
-    modelCalls += topLevelCalls ?? 0
-    providerCostTicks += finiteNumber(usage.costUsdTicks) ?? 0
-
-    const modelUsage = asRecord(usage.modelUsage)
-    if (modelUsage) {
-      let nestedCalls = 0
-      for (const [model, modelRaw] of Object.entries(modelUsage)) {
-        const modelTotals = asRecord(modelRaw)
-        const calls = Math.max(1, finiteNumber(modelTotals?.modelCalls) ?? 1)
-        nestedCalls += calls
-        for (let index = 0; index < calls; index++) observedModels.push(model)
-      }
-      if (topLevelCalls == null) modelCalls += nestedCalls
-    }
-    const meta = asRecord(update?._meta)
-    const fallbackModel = stringValue(meta?.modelId)
-    if (!modelUsage && fallbackModel) observedModels.push(fallbackModel)
-  }
-
-  return {
-    tokensIn: foundUsage ? tokensIn : null,
-    tokensOut: foundUsage ? tokensOut : null,
-    tokensTotal: foundUsage ? tokensTotal : null,
-    tokensCached: foundUsage ? tokensCached : null,
-    tokensReasoning: foundUsage ? tokensReasoning : null,
-    modelCalls: foundUsage ? modelCalls : null,
-    model: dominantModel('grok', observedModels),
-    apiDurationMs: foundUsage && apiDurationMs > 0 ? apiDurationMs : null,
-    providerCostUsd:
-      foundUsage && providerCostTicks > 0
-        ? +(providerCostTicks / 1_000_000_000).toFixed(6)
-        : null
-  }
-}
-
-function readUsageFile(path: string): GrokUsageTotals {
-  if (!existsSync(path)) return emptyUsage()
-  try {
-    const stat = statSync(path)
-    const cached = usageCache.get(path)
-    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
-      return cached.value
-    }
-    const value = parseGrokUsageUpdates(readFileSync(path, 'utf-8'))
-    usageCache.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, value })
-    return value
-  } catch {
-    return emptyUsage()
-  }
-}
-
-function emptyUsage(): GrokUsageTotals {
-  return {
-    tokensIn: null,
-    tokensOut: null,
-    tokensTotal: null,
-    tokensCached: null,
-    tokensReasoning: null,
-    modelCalls: null,
-    model: null,
-    apiDurationMs: null,
-    providerCostUsd: null
-  }
+  const { events: unique } = dedupeEvents(events)
+  return eventsToSessionRows(unique, facts).filter((row) => row.tokens_total != null)
 }
 
 function listSessionDirectories(root: string): Array<{ path: string; mtimeMs: number }> {
@@ -237,7 +148,7 @@ function listSessionDirectories(root: string): Array<{ path: string; mtimeMs: nu
       })
     }
   }
-  return output
+  return output.sort((a, b) => b.mtimeMs - a.mtimeMs)
 }
 
 function safeDirectories(path: string): string[] {
@@ -250,7 +161,9 @@ function safeDirectories(path: string): string[] {
   }
 }
 
-function readIndexedSessions(root: string): Map<string, { cwd: string | null; updated_at: string | null }> {
+function readIndexedSessions(
+  root: string
+): Map<string, { cwd: string | null; updated_at: string | null }> {
   const output = new Map<string, { cwd: string | null; updated_at: string | null }>()
   const dbPath = join(root, 'session_search.sqlite')
   if (!existsSync(dbPath)) return output
@@ -263,7 +176,7 @@ function readIndexedSessions(root: string): Map<string, { cwd: string | null; up
         `SELECT session_id, cwd, updated_at
          FROM session_docs
          ORDER BY updated_at DESC
-         LIMIT ${MAX_SESSIONS}`
+         LIMIT ${MAX_INDEXED}`
       )
       .all() as SessionDocRow[]
     for (const row of rows) {
@@ -281,7 +194,9 @@ function readIndexedSessions(root: string): Map<string, { cwd: string | null; up
   return output
 }
 
-function readActiveSessions(home: string): Map<string, { cwd: string | null; opened_at: string | null }> {
+function readActiveSessions(
+  home: string
+): Map<string, { cwd: string | null; opened_at: string | null }> {
   const output = new Map<string, { cwd: string | null; opened_at: string | null }>()
   const raw = readJson(join(home, 'active_sessions.json'))
   if (!Array.isArray(raw)) return output
@@ -318,12 +233,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function stringValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null
-}
-
-function finiteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : null
 }
 
 function durationBetween(start: string | null, end: string | null): number | null {
