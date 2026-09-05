@@ -19,6 +19,10 @@ This project builds that pane as a **desktop app** that reuses the logins you al
 
 ---
 
+> **Working on this repo?** Start with [`HANDOVER.md`](./HANDOVER.md) — current
+> state, open triage, backlog, and the protocol for working in parallel without
+> colliding.
+
 ## Status
 
 | Area | Status |
