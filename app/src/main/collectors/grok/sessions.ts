@@ -1,10 +1,10 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import { basename, join } from 'path'
 import Database from 'better-sqlite3'
-import type { SessionRow, UsageEvent } from '../../../shared/types'
+import type { UsageEvent } from '../../../shared/types'
 import { projectNameFromCwd } from '../../util/project'
 import { getGrokHome } from '../../util/paths'
-import { dedupeEvents, eventsToSessionRows, type SessionFacts } from '../aggregate'
+import { collectUsage, type CollectedUsage, type SessionFacts } from '../aggregate'
 import {
   readCached,
   splitLines,
@@ -68,9 +68,9 @@ function parseChunk(sessionId: string): (
 export function collectGrokSessions(
   home = getGrokHome(),
   cache: ScanCache = new Map()
-): SessionRow[] {
+): CollectedUsage {
   const sessionsRoot = join(home, 'sessions')
-  if (!existsSync(sessionsRoot)) return []
+  if (!existsSync(sessionsRoot)) return { sessions: [], events: [] }
 
   const active = readActiveSessions(home)
   const indexed = readIndexedSessions(sessionsRoot)
@@ -129,8 +129,7 @@ export function collectGrokSessions(
     })
   }
 
-  const { events: unique } = dedupeEvents(events)
-  return eventsToSessionRows(unique, facts).filter((row) => row.tokens_total != null)
+  return collectUsage(events, facts)
 }
 
 function listSessionDirectories(root: string): Array<{ path: string; mtimeMs: number }> {

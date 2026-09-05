@@ -38,6 +38,15 @@ export interface DedupeResult {
 }
 
 /**
+ * What a collector produces: the events themselves, which are the durable
+ * record, plus the session rows rolled up from them for the session list.
+ */
+export interface CollectedUsage {
+  sessions: SessionRow[]
+  events: UsageEvent[]
+}
+
+/**
  * Drops repeats by `dedupe_key`, keeping the first.
  *
  * This has to run across every file of a provider, not per file: Claude
@@ -186,6 +195,34 @@ export function eventsToSessionRows(
       source: fact.source
     }
   })
+}
+
+/**
+ * The collector pipeline: de-duplicate, attribute each event to its session's
+ * project, then roll up into session rows.
+ *
+ * Events keep the project on them because they outlive the rollup — a query
+ * that groups by project reads events directly.
+ */
+export function collectUsage(
+  events: readonly UsageEvent[],
+  facts: readonly SessionFacts[]
+): CollectedUsage {
+  const { events: unique } = dedupeEvents(events)
+  const projectBySession = new Map(
+    facts.map((fact) => [sessionIdOf(fact), fact.project] as const)
+  )
+  const attributed = unique.map((event) =>
+    event.project === '' && projectBySession.has(event.session_id)
+      ? { ...event, project: projectBySession.get(event.session_id)! }
+      : event
+  )
+  return {
+    events: attributed,
+    sessions: eventsToSessionRows(attributed, facts).filter(
+      (row) => row.tokens_total != null
+    )
+  }
 }
 
 /** Session facts carry the prefixed row id; events carry the bare session id. */

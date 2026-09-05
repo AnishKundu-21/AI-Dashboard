@@ -1,9 +1,9 @@
 import { existsSync, readdirSync } from 'fs'
 import { join } from 'path'
-import type { SessionRow, UsageEvent } from '../../../shared/types'
+import type { UsageEvent } from '../../../shared/types'
 import { projectNameFromCwd } from '../../util/project'
 import { getCodexHome } from '../../util/paths'
-import { dedupeEvents, eventsToSessionRows, type SessionFacts } from '../aggregate'
+import { collectUsage, type CollectedUsage, type SessionFacts } from '../aggregate'
 import {
   readCached,
   splitLines,
@@ -83,9 +83,9 @@ interface CodexFileFacts {
 export function collectCodexSessions(
   home = getCodexHome(),
   cache: ScanCache = new Map()
-): SessionRow[] {
+): CollectedUsage {
   const sessionsDir = join(home, 'sessions')
-  if (!existsSync(sessionsDir)) return []
+  if (!existsSync(sessionsDir)) return { sessions: [], events: [] }
 
   const events: UsageEvent[] = []
   const facts: SessionFacts[] = []
@@ -121,8 +121,7 @@ export function collectCodexSessions(
     })
   }
 
-  const { events: unique } = dedupeEvents(events)
-  return eventsToSessionRows(unique, facts).filter((row) => row.tokens_total != null)
+  return collectUsage(events, facts)
 }
 
 function fallbackSessionId(path: string): string {

@@ -78,8 +78,8 @@ export const claudeAdapter: ProviderAdapter = {
   },
 
   async collectSessions(_ctx: AdapterContext): Promise<CollectResult> {
-    const sessions = collectClaudeSessions(getClaudeHome(), getScanCache())
+    const collected = collectClaudeSessions(getClaudeHome(), getScanCache())
     markScanCacheDirty()
-    return { sessions, upserted: sessions.length }
+    return { ...collected, upserted: collected.sessions.length }
   }
 }

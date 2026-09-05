@@ -19,7 +19,7 @@ import { buildBurnSeries } from '../analytics/burn'
 import { buildProjectionCard } from '../analytics/projections'
 import { pricingInfo } from '../pricing/store'
 import { fxInfo } from '../pricing/fx'
-import { dayInZone as dayInZoneMs, rangeStartMs } from '../util/time'
+import { makeDayFormatter, rangeStartMs } from '../util/time'
 import { normalizeModelName } from '../collectors/models'
 
 type ProviderFilter = ProviderId | 'all'
@@ -35,11 +35,6 @@ function providerClause(provider: ProviderFilter, column = 'provider'): string {
 function rangeStart(rangeDays: RangeDays, timezone = 'system'): Date | null {
   const ms = rangeStartMs(rangeDays, timezone)
   return ms === null ? null : new Date(ms)
-}
-
-function dayInZone(iso: string, timezone: string): string {
-  const ms = Date.parse(iso)
-  return Number.isNaN(ms) ? iso.slice(0, 10) : dayInZoneMs(ms, timezone)
 }
 
 function inclusiveDaysSince(day: string | null): number {
@@ -144,32 +139,44 @@ export function getLatestQuotas(db: Database.Database): QuotaSnapshot[] {
   })
 }
 
+/**
+ * Headline totals, read from events.
+ *
+ * Filtering sessions by `started_at` would count a session that began just
+ * before the window opened as wholly inside or wholly outside it. Events carry
+ * their own instant, so a range boundary cuts exactly where it should.
+ */
 export function getOverview(
   db: Database.Database,
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): OverviewMetrics {
   const timezone = getSettings(db).timezone
-  const sinceIso = rangeStart(rangeDays, timezone)?.toISOString() ?? null
+  const sinceMs = rangeStartMs(rangeDays, timezone)
 
   const row = db
     .prepare(
       `
     SELECT
-      COALESCE(SUM(tokens_total), 0) AS tokens_total,
-      COALESCE(SUM(api_equiv_usd), 0) AS api_equiv_usd,
-      COUNT(*) AS session_count,
-      MIN(COALESCE(started_at, created_at)) AS min_started_at
-    FROM sessions
-    WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+      COALESCE(SUM(uncached_input + cached_input + cache_creation + output), 0) AS tokens_total,
+      COALESCE(SUM(cost_usd), 0) AS api_equiv_usd,
+      COUNT(DISTINCT provider || session_id) AS session_count,
+      COALESCE(SUM(cache_savings_usd), 0) AS cache_savings_usd,
+      COUNT(DISTINCT CASE WHEN cost_usd IS NULL THEN provider || session_id END)
+        AS unpriced_sessions,
+      MIN(ts_ms) AS min_ts_ms
+    FROM usage_events
+    WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
       AND ${providerClause(provider)}
   `
     )
-    .get({ sinceIso, provider }) as {
+    .get({ sinceMs, provider }) as {
     tokens_total: number
     api_equiv_usd: number
     session_count: number
-    min_started_at: string | null
+    cache_savings_usd: number
+    unpriced_sessions: number
+    min_ts_ms: number | null
   }
 
   const byProviderRows = db
@@ -177,17 +184,17 @@ export function getOverview(
       `
     SELECT
       provider,
-      COALESCE(SUM(tokens_total), 0) AS tokens_total,
-      COALESCE(SUM(api_equiv_usd), 0) AS api_equiv_usd,
-      COUNT(*) AS session_count
-    FROM sessions
-    WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+      COALESCE(SUM(uncached_input + cached_input + cache_creation + output), 0) AS tokens_total,
+      COALESCE(SUM(cost_usd), 0) AS api_equiv_usd,
+      COUNT(DISTINCT session_id) AS session_count
+    FROM usage_events
+    WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
       AND ${providerClause(provider)}
     GROUP BY provider
     ORDER BY tokens_total DESC
   `
     )
-    .all({ sinceIso, provider }) as ProviderCost[]
+    .all({ sinceMs, provider }) as ProviderCost[]
 
   const quotas = getLatestQuotas(db)
     .filter((q) => provider === 'all' || q.provider === provider)
@@ -203,35 +210,24 @@ export function getOverview(
   const breakdown = db
     .prepare(
       `SELECT
-         COALESCE(SUM(tokens_in), 0) AS input,
-         COALESCE(SUM(tokens_out), 0) AS output,
-         COALESCE(SUM(tokens_cached), 0) AS cached,
-         COALESCE(SUM(tokens_reasoning), 0) AS reasoning,
-         COALESCE(SUM(model_calls), 0) AS model_calls
-         -- input is uncached input; cached covers both reads and writes
-       FROM sessions
-       WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+         COALESCE(SUM(uncached_input), 0) AS input,
+         COALESCE(SUM(output), 0) AS output,
+         COALESCE(SUM(cached_input + cache_creation), 0) AS cached,
+         COALESCE(SUM(reasoning), 0) AS reasoning,
+         COUNT(*) AS model_calls
+       FROM usage_events
+       WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
          AND ${providerClause(provider)}`
     )
-    .get({ sinceIso, provider }) as OverviewMetrics['token_breakdown']
+    .get({ sinceMs, provider }) as OverviewMetrics['token_breakdown']
 
-  const quality = db
-    .prepare(
-      `SELECT
-         COALESCE(SUM(cache_savings_usd), 0) AS cache_savings_usd,
-         COALESCE(SUM(CASE WHEN unpriced = 1 THEN 1 ELSE 0 END), 0) AS unpriced_sessions
-       FROM sessions
-       WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
-         AND ${providerClause(provider)}`
-    )
-    .get({ sinceIso, provider }) as {
-    cache_savings_usd: number
-    unpriced_sessions: number
-  }
+  const averageDays =
+    rangeDays === 0
+      ? inclusiveDaysSince(
+          row.min_ts_ms == null ? null : new Date(row.min_ts_ms).toISOString().slice(0, 10)
+        )
+      : rangeDays
 
-  const averageDays = rangeDays === 0
-    ? inclusiveDaysSince(row.min_started_at?.slice(0, 10) ?? null)
-    : rangeDays
   return {
     tokens_total: row.tokens_total,
     api_equiv_usd: row.api_equiv_usd,
@@ -241,54 +237,78 @@ export function getOverview(
     avg_daily_tokens: row.tokens_total / averageDays,
     token_breakdown: breakdown,
     by_provider: byProviderRows,
-    cache_savings_usd: quality.cache_savings_usd,
-    unpriced_sessions: quality.unpriced_sessions,
+    cache_savings_usd: row.cache_savings_usd,
+    unpriced_sessions: row.unpriced_sessions,
     pricing: pricingInfo(),
     fx: fxInfo()
   }
 }
 
+/**
+ * Daily usage, bucketed from individual events.
+ *
+ * Reading events rather than sessions is what makes a session that ran past
+ * midnight contribute to both days instead of landing wholly on the one it
+ * started.
+ */
 export function getDailyUsage(
   db: Database.Database,
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): DailyUsagePoint[] {
   const timezone = getSettings(db).timezone
-  const sinceIso = rangeStart(rangeDays, timezone)?.toISOString() ?? null
-  const sessions = db
+  const sinceMs = rangeStartMs(rangeDays, timezone)
+  const dayOf = makeDayFormatter(timezone)
+
+  const rows = db
     .prepare(
       `
-    SELECT provider, COALESCE(started_at, created_at) AS occurred_at,
-           COALESCE(tokens_total, 0) AS tokens_total,
-           COALESCE(api_equiv_usd, 0) AS api_equiv_usd
-    FROM sessions
-    WHERE (@sinceIso IS NULL OR COALESCE(started_at, created_at) >= @sinceIso)
+    SELECT provider, ts_ms, session_id,
+           (uncached_input + cached_input + cache_creation + output) AS tokens_total,
+           COALESCE(cost_usd, 0) AS api_equiv_usd
+    FROM usage_events
+    WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
       AND ${providerClause(provider)}
   `
     )
-    .all({ sinceIso, provider }) as Array<{
+    .all({ sinceMs, provider }) as Array<{
       provider: ProviderId
-      occurred_at: string
+      ts_ms: number
+      session_id: string
       tokens_total: number
       api_equiv_usd: number
     }>
-  const grouped = new Map<string, DailyUsagePoint>()
-  for (const session of sessions) {
-    const day = dayInZone(session.occurred_at, timezone)
-    const key = `${day}\u0000${session.provider}`
-    const current = grouped.get(key) ?? {
-      day,
-      provider: session.provider,
-      tokens_total: 0,
-      session_count: 0,
-      api_equiv_usd: 0
+
+  const grouped = new Map<string, DailyUsagePoint & { sessions: Set<string> }>()
+  for (const row of rows) {
+    const day = dayOf(row.ts_ms)
+    const key = `${day} ${row.provider}`
+    let current = grouped.get(key)
+    if (!current) {
+      current = {
+        day,
+        provider: row.provider,
+        tokens_total: 0,
+        session_count: 0,
+        api_equiv_usd: 0,
+        sessions: new Set<string>()
+      }
+      grouped.set(key, current)
     }
-    current.tokens_total += session.tokens_total
-    current.session_count += 1
-    current.api_equiv_usd += session.api_equiv_usd
-    grouped.set(key, current)
+    current.tokens_total += row.tokens_total
+    current.api_equiv_usd += row.api_equiv_usd
+    current.sessions.add(row.session_id)
   }
-  return Array.from(grouped.values()).sort((a, b) => a.day.localeCompare(b.day))
+
+  return Array.from(grouped.values())
+    .map(({ sessions, ...point }) => ({
+      ...point,
+      // A session active on two days counts once on each, which is what the
+      // chart is asking for.
+      session_count: sessions.size,
+      api_equiv_usd: Math.round(point.api_equiv_usd * 1e6) / 1e6
+    }))
+    .sort((a, b) => a.day.localeCompare(b.day))
 }
 
 export function getSessions(
@@ -399,28 +419,34 @@ export function recordCollectorHealth(
   ).run(next)
 }
 
+/**
+ * Token share per model, from events.
+ *
+ * A session that switched models contributes to each of them here; the
+ * previous session-grain query attributed all of its tokens to whichever
+ * model happened to dominate.
+ */
 export function getModelMix(
   db: Database.Database,
   provider: ProviderFilter,
   rangeDays: RangeDays
 ): ModelMixItem[] {
-  const sinceIso = rangeStart(rangeDays, getSettings(db).timezone)?.toISOString() ?? null
+  const sinceMs = rangeStartMs(rangeDays, getSettings(db).timezone)
 
   const rows = db
     .prepare(
       `
-    SELECT model, provider, COALESCE(SUM(tokens_total), 0) AS tokens_total
-    FROM sessions
-    WHERE (@sinceIso IS NULL OR (started_at IS NOT NULL AND started_at >= @sinceIso))
+    SELECT model, provider,
+           SUM(uncached_input + cached_input + cache_creation + output) AS tokens_total
+    FROM usage_events
+    WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
       AND ${providerClause(provider)}
-      AND tokens_total IS NOT NULL
-      AND tokens_total > 0
-      AND lower(trim(model)) NOT IN ('unknown', 'auto', 'default', '')
     GROUP BY model, provider
+    HAVING tokens_total > 0
     ORDER BY tokens_total DESC
   `
     )
-    .all({ sinceIso, provider }) as Array<{
+    .all({ sinceMs, provider }) as Array<{
     model: string
     provider: ProviderId
     tokens_total: number

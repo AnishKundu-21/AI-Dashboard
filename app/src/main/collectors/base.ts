@@ -1,8 +1,15 @@
 import type { ProviderId } from '../../shared/providers'
-import type { AppSettings, QuotaSnapshot, SessionRow } from '../../shared/types'
+import type {
+  AppSettings,
+  QuotaSnapshot,
+  SessionRow,
+  UsageEvent
+} from '../../shared/types'
 
 export interface CollectResult {
   sessions: SessionRow[]
+  /** The durable record; session rows are a rollup of these. */
+  events: UsageEvent[]
   upserted: number
 }
 

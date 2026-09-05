@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from 'fs'
 import { basename, join } from 'path'
 import type { SessionRow, UsageEvent } from '../../../shared/types'
 import { projectNameFromCwd } from '../../util/project'
-import { dedupeEvents, eventsToSessionRows, type SessionFacts } from '../aggregate'
+import { collectUsage, type CollectedUsage, type SessionFacts } from '../aggregate'
 import {
   readCached,
   splitLines,
@@ -104,9 +104,9 @@ function parseChunk(
 export function collectClaudeSessions(
   home: string,
   cache: ScanCache = new Map()
-): SessionRow[] {
+): CollectedUsage {
   const projects = join(home, 'projects')
-  if (!existsSync(projects)) return []
+  if (!existsSync(projects)) return { sessions: [], events: [] }
 
   const events: UsageEvent[] = []
   const factsBySession = new Map<string, ClaudeFileFacts>()
@@ -133,11 +133,6 @@ export function collectClaudeSessions(
     events.push(...result.events)
   }
 
-  // Across files, not within one: a resumed or branched session replays
-  // earlier messages into a new transcript, and those repeats carry the same
-  // message/request pair.
-  const { events: unique } = dedupeEvents(events)
-
   const facts: SessionFacts[] = []
   for (const [sessionId, fileFacts] of factsBySession) {
     facts.push({
@@ -155,9 +150,10 @@ export function collectClaudeSessions(
     })
   }
 
-  return eventsToSessionRows(unique, facts).filter(
-    (row) => row.tokens_total != null
-  )
+  // De-duplication runs across files, not within one: a resumed or branched
+  // session replays earlier messages into a new transcript, and those repeats
+  // carry the same message/request pair.
+  return collectUsage(events, facts)
 }
 
 function listJsonlFiles(root: string): string[] {

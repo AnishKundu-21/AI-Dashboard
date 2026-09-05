@@ -186,5 +186,44 @@ ALTER TABLE sessions ADD COLUMN unpriced INTEGER NOT NULL DEFAULT 0;
 DELETE FROM sessions;
 DELETE FROM usage_daily;
 `
+  },
+  {
+    version: 7,
+    sql: `
+-- Event-grain usage. Session rows remain as metadata plus a rollup cache, but
+-- every aggregate that depends on *when* a token was spent reads this instead:
+-- a session spanning midnight previously landed entirely on its start day, and
+-- a session that switched models was attributed wholly to the dominant one.
+CREATE TABLE IF NOT EXISTS usage_events (
+  dedupe_key TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  project TEXT NOT NULL DEFAULT '',
+  -- The raw provider model id, which is the rate-table key. Display
+  -- normalisation happens on read.
+  model TEXT NOT NULL,
+  ts_ms INTEGER NOT NULL,
+  uncached_input REAL NOT NULL DEFAULT 0,
+  cached_input REAL NOT NULL DEFAULT 0,
+  cache_creation REAL NOT NULL DEFAULT 0,
+  output REAL NOT NULL DEFAULT 0,
+  -- A subset of output; never added into a total.
+  reasoning REAL NOT NULL DEFAULT 0,
+  -- Priced at ingest against the rate table current at the time, and recomputed
+  -- when the table or the user's overrides change. NULL means unpriced.
+  cost_usd REAL,
+  cache_savings_usd REAL,
+  reported_cost_usd REAL,
+  source TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_ts ON usage_events(ts_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_events_provider_ts ON usage_events(provider, ts_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_events_session ON usage_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_events_model ON usage_events(provider, model);
+
+-- Rebuilt from events on the next scan, which runs at startup.
+DELETE FROM usage_daily;
+`
   }
 ]

@@ -8,6 +8,7 @@ import {
   setSettings
 } from '../db/queries'
 import { insertQuotaSnapshot, upsertSessions } from '../db/upsert'
+import { recomputeDailyFromEvents, upsertEvents } from '../db/events'
 import { evaluateAlerts } from '../alerts/engine'
 import { IPC } from '../../shared/ipc'
 import type { QuotaSnapshot } from '../../shared/types'
@@ -156,6 +157,10 @@ export async function collectAllSessions(): Promise<{ upserted: number }> {
     const scannedAt = new Date().toISOString()
     try {
       const result = await adapter.collectSessions(ctx)
+      // Events first: session rows are a rollup of them, and the daily table
+      // is rebuilt from them for the days they touch.
+      upsertEvents(db, result.events)
+      recomputeDailyFromEvents(db, result.events, settings.timezone)
       upserted += upsertSessions(db, result.sessions)
       recordCollectorHealth(db, adapter.id, {
         last_scan_at: scannedAt,
@@ -212,6 +217,8 @@ export async function collectProviderSessions(
   const scannedAt = new Date().toISOString()
   try {
     const result = await adapter.collectSessions(ctx)
+    upsertEvents(db, result.events)
+    recomputeDailyFromEvents(db, result.events, settings.timezone)
     const upserted = upsertSessions(db, result.sessions)
     recordCollectorHealth(db, provider, {
       last_scan_at: scannedAt,

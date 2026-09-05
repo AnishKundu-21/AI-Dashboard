@@ -28,6 +28,12 @@ import {
   setSettings
 } from '../db/queries'
 import { collectProviderSessions, refreshEverything } from '../collectors/service'
+import {
+  rebuildAllDays,
+  refreshSessionRollups,
+  repriceEvents
+} from '../db/events'
+import { setPriceOverrides } from '../pricing/store'
 import { applyRetention } from '../db/retention'
 
 export function registerIpcHandlers(): void {
@@ -113,8 +119,24 @@ export function registerIpcHandlers(): void {
 
   secureHandle(IPC.settingsSet, (_e, raw) => {
     const input = SettingsSetInput.parse(raw ?? {})
-    const next = setSettings(getDb(), input)
-    applyRetention(getDb(), next.retention_days)
+    const db = getDb()
+    const previous = getSettings(db)
+    const next = setSettings(db, input)
+
+    // Stored costs are a cache of the rate table, and stored day buckets a
+    // cache of the display timezone. Both have to be rebuilt when the input
+    // they were derived from changes, or the dashboard keeps showing figures
+    // computed under the old setting.
+    if (input.price_overrides !== undefined) {
+      setPriceOverrides(next.price_overrides)
+      repriceEvents(db)
+      refreshSessionRollups(db)
+      rebuildAllDays(db, next.timezone)
+    } else if (next.timezone !== previous.timezone) {
+      rebuildAllDays(db, next.timezone)
+    }
+
+    applyRetention(db, next.retention_days)
     broadcastChanged()
     return next
   })

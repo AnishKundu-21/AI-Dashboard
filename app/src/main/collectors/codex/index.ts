@@ -74,9 +74,9 @@ export const codexAdapter: ProviderAdapter = {
   },
 
   async collectSessions(_ctx: AdapterContext): Promise<CollectResult> {
-    const sessions = collectCodexSessions(getCodexHome(), getScanCache())
+    const collected = collectCodexSessions(getCodexHome(), getScanCache())
     markScanCacheDirty()
-    return { sessions, upserted: sessions.length }
+    return { ...collected, upserted: collected.sessions.length }
   }
 }
 

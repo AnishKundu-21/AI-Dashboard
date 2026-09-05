@@ -60,6 +60,12 @@ Usage is now parsed into a canonical four-class token model
   of a forked or subagent rollout.
 - **Grok counts only `turn_completed` updates**, and emits one event per model
   so a multi-model turn is priced at each model's own rate.
+- **Usage is stored per model call**, not per session (`usage_events`). A
+  session that ran past midnight contributes to both days and one that switched
+  models is priced at each model's own rate; on this developer's machine that is
+  16 and 12 sessions respectively out of 97. Overview totals, the daily chart
+  and the model mix all read events. Costs are stored at ingest and repriced
+  when the rate table or a price override changes.
 - **Day bucketing is timezone-correct**, tested against half-hour offsets and
   DST boundaries.
 - **Transcript scanning is incremental.** Files are memoised by `(size, mtime)`

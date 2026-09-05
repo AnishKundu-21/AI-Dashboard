@@ -65,8 +65,8 @@ export const grokAdapter: ProviderAdapter = {
   },
 
   async collectSessions(_ctx: AdapterContext): Promise<CollectResult> {
-    const sessions = collectGrokSessions(getGrokHome(), getScanCache())
+    const collected = collectGrokSessions(getGrokHome(), getScanCache())
     markScanCacheDirty()
-    return { sessions, upserted: sessions.length }
+    return { ...collected, upserted: collected.sessions.length }
   }
 }

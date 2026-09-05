@@ -9,7 +9,12 @@ export function applyRetention(
   const days = Math.max(1, Math.floor(retentionDays))
   const modifier = `-${days} days`
 
+  const cutoffMs = Date.now() - days * 86_400_000
+
   const prune = db.transaction(() => {
+    // Events are the durable record and the largest table, so they are pruned
+    // on the same window as everything else.
+    db.prepare('DELETE FROM usage_events WHERE ts_ms < ?').run(cutoffMs)
     db.prepare(
       `DELETE FROM sessions
        WHERE datetime(COALESCE(started_at, created_at)) < datetime('now', ?)`

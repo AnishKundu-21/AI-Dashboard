@@ -20,7 +20,8 @@ import { collectGrokSessions } from '../src/main/collectors/grok/sessions'
 import { primeRateTable, rateForModel, resetPricingForTests } from '../src/main/pricing/store'
 import { RATES_URL } from '../src/main/pricing/store'
 import type { ScanCache } from '../src/main/collectors/scanCache'
-import type { SessionRow } from '../src/shared/types'
+import { makeDayFormatter } from '../src/main/util/time'
+import type { SessionRow, UsageEvent } from '../src/shared/types'
 
 const RATES_TIMEOUT_MS = 30_000
 
@@ -102,16 +103,19 @@ describe('real-data verification', () => {
 
       const cache: ScanCache = new Map()
       const all: SessionRow[] = []
+      const allEvents: UsageEvent[] = []
 
       if (existsSync(homes.claude)) {
         const t0 = Date.now()
-        const rows = collectClaudeSessions(homes.claude, cache)
+        const collected = collectClaudeSessions(homes.claude, cache)
+        const rows = collected.sessions
+        allEvents.push(...collected.events)
         console.log(`\nclaude cold scan: ${Date.now() - t0}ms, ${cache.size} files cached`)
         summarise('CLAUDE', rows)
         all.push(...rows)
 
         const t1 = Date.now()
-        const again = collectClaudeSessions(homes.claude, cache)
+        const again = collectClaudeSessions(homes.claude, cache).sessions
         console.log(`claude warm scan: ${Date.now() - t1}ms`)
         expect(again.length).toBe(rows.length)
 
@@ -130,7 +134,9 @@ describe('real-data verification', () => {
 
       if (existsSync(homes.codex)) {
         const t0 = Date.now()
-        const rows = collectCodexSessions(homes.codex, cache)
+        const collected = collectCodexSessions(homes.codex, cache)
+        const rows = collected.sessions
+        allEvents.push(...collected.events)
         console.log(`\ncodex cold scan: ${Date.now() - t0}ms`)
         summarise('CODEX', rows)
         all.push(...rows)
@@ -138,13 +144,40 @@ describe('real-data verification', () => {
 
       if (existsSync(homes.grok)) {
         const t0 = Date.now()
-        const rows = collectGrokSessions(homes.grok, cache)
+        const collected = collectGrokSessions(homes.grok, cache)
+        const rows = collected.sessions
+        allEvents.push(...collected.events)
         console.log(`\ngrok cold scan: ${Date.now() - t0}ms`)
         summarise('GROK', rows)
         all.push(...rows)
       }
 
       summarise('ALL PROVIDERS', all)
+
+      // Event grain: the point of persisting these is that a session spanning
+      // midnight, or switching models, attributes to each part correctly.
+      const dayOf = makeDayFormatter('system')
+      const days = new Set(allEvents.map((e) => dayOf(e.ts_ms)))
+      const multiDay = new Map<string, Set<string>>()
+      const multiModel = new Map<string, Set<string>>()
+      for (const e of allEvents) {
+        const key = `${e.provider}:${e.session_id}`
+        if (!multiDay.has(key)) multiDay.set(key, new Set())
+        multiDay.get(key)!.add(dayOf(e.ts_ms))
+        if (!multiModel.has(key)) multiModel.set(key, new Set())
+        multiModel.get(key)!.add(e.model)
+      }
+      console.log(`
+=== EVENTS ===`)
+      console.log(`events              ${allEvents.length}`)
+      console.log(`distinct days       ${days.size}`)
+      console.log(
+        `sessions spanning >1 day    ${[...multiDay.values()].filter((d) => d.size > 1).length}`
+      )
+      console.log(
+        `sessions using >1 model     ${[...multiModel.values()].filter((m) => m.size > 1).length}`
+      )
+      expect(new Set(allEvents.map((e) => e.dedupe_key)).size).toBe(allEvents.length)
 
       // Invariants that must hold on real data, not just fixtures.
       for (const row of all) {

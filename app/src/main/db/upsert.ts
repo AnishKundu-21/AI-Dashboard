@@ -93,18 +93,9 @@ export function upsertSessions(
 
   const now = new Date().toISOString()
   let count = 0
-  const affected = new Set<string>()
-  const existing = db.prepare(
-    `SELECT provider, substr(COALESCE(started_at, created_at), 1, 10) AS day
-     FROM sessions WHERE id = ?`
-  )
 
   const tx = db.transaction((rows: SessionRow[]) => {
     for (const s of rows) {
-      const previous = existing.get(s.id) as
-        | { provider: string; day: string | null }
-        | undefined
-      if (previous?.day) affected.add(`${previous.provider}\u0000${previous.day}`)
       insert.run({
         id: s.id,
         provider: s.provider,
@@ -129,54 +120,10 @@ export function upsertSessions(
         machine_id: 'local',
         created_at: now
       })
-      const current = existing.get(s.id) as {
-        provider: string
-        day: string | null
-      }
-      if (current.day) affected.add(`${current.provider}\u0000${current.day}`)
       count++
     }
-    recomputeAffectedDays(db, affected)
   })
   tx(sessions)
 
   return count
-}
-
-function recomputeAffectedDays(
-  db: Database.Database,
-  affected: Set<string>
-): void {
-  const aggregate = db.prepare(
-    `SELECT
-       COALESCE(SUM(tokens_total), 0) AS tokens_total,
-       COUNT(*) AS session_count,
-       COALESCE(SUM(api_equiv_usd), 0) AS api_equiv_usd
-     FROM sessions
-     WHERE provider = ?
-       AND substr(COALESCE(started_at, created_at), 1, 10) = ?`
-  )
-  const upsertDaily = db.prepare(
-    `INSERT INTO usage_daily (day, provider, tokens_total, session_count, api_equiv_usd)
-     VALUES (@day, @provider, @tokens_total, @session_count, @api_equiv_usd)
-     ON CONFLICT(day, provider) DO UPDATE SET
-       tokens_total = excluded.tokens_total,
-       session_count = excluded.session_count,
-       api_equiv_usd = excluded.api_equiv_usd`
-  )
-  const deleteDaily = db.prepare(
-    'DELETE FROM usage_daily WHERE provider = ? AND day = ?'
-  )
-
-  for (const key of affected) {
-    const [provider, day] = key.split('\u0000')
-    if (!day || day.length < 10) continue
-    const row = aggregate.get(provider, day) as {
-      tokens_total: number
-      session_count: number
-      api_equiv_usd: number
-    }
-    if (row.session_count === 0) deleteDaily.run(provider, day)
-    else upsertDaily.run({ provider, day, ...row })
-  }
 }

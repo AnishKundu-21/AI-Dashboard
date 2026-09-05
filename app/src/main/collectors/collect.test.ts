@@ -94,7 +94,7 @@ describe('collectClaudeSessions', () => {
       }
     ])
 
-    const [row] = collectClaudeSessions(home)
+    const [row] = collectClaudeSessions(home).sessions
     expect(row).toEqual(
       expect.objectContaining({
         id: 'claude:session-7',
@@ -135,7 +135,7 @@ describe('collectClaudeSessions', () => {
       assistant('msg-2', 'req-2')
     ])
 
-    const rows = collectClaudeSessions(home)
+    const rows = collectClaudeSessions(home).sessions
     expect(rows).toHaveLength(1)
     expect(rows[0].tokens_total).toBe(320)
   })
@@ -157,14 +157,14 @@ describe('collectClaudeSessions', () => {
       }
     ])
 
-    const [row] = collectClaudeSessions(home)
+    const [row] = collectClaudeSessions(home).sessions
     expect(row.unpriced).toBe(true)
     expect(row.api_equiv_usd).toBeNull()
     expect(row.tokens_total).toBe(120)
   })
 
   it('returns nothing when the CLI is not installed', () => {
-    expect(collectClaudeSessions(tempHome())).toEqual([])
+    expect(collectClaudeSessions(tempHome())).toEqual({ sessions: [], events: [] })
   })
 
   it('reuses the scan cache across calls', () => {
@@ -172,8 +172,8 @@ describe('collectClaudeSessions', () => {
     writeTranscript(home, 'a.jsonl', [assistant('msg-1', 'req-1')])
     const cache: ScanCache = new Map()
 
-    const first = collectClaudeSessions(home, cache)
-    const second = collectClaudeSessions(home, cache)
+    const first = collectClaudeSessions(home, cache).sessions
+    const second = collectClaudeSessions(home, cache).sessions
     expect(cache.size).toBe(1)
     expect(second).toEqual(first)
   })
@@ -217,7 +217,7 @@ describe('collectCodexSessions', () => {
       }
     ])
 
-    const [row] = collectCodexSessions(home)
+    const [row] = collectCodexSessions(home).sessions
     expect(row).toEqual(
       expect.objectContaining({
         id: 'codex:codex-1',
@@ -278,7 +278,7 @@ describe('collectCodexSessions', () => {
       }
     ])
 
-    const rows = collectCodexSessions(home)
+    const rows = collectCodexSessions(home).sessions
     const total = rows.reduce((sum, row) => sum + (row.tokens_total ?? 0), 0)
     // 1100 from the parent plus 550 from the fork; the copied burst is dropped.
     expect(total).toBe(1_650)
@@ -325,7 +325,7 @@ describe('collectGrokSessions', () => {
       })
     ])
 
-    const [row] = collectGrokSessions(home)
+    const [row] = collectGrokSessions(home).sessions
     expect(row.tokens_total).toBe(110)
     expect(row.model).toBe('grok-4')
     expect(row.project).toBe('UsefulApp')
@@ -344,7 +344,7 @@ describe('collectGrokSessions', () => {
       })
     ])
 
-    const [row] = collectGrokSessions(home)
+    const [row] = collectGrokSessions(home).sessions
     expect(row.tokens_total).toBe(330)
     // The known half is priced; the unknown half flags the row as a floor.
     expect(row.api_equiv_usd).toBeCloseTo(200 * 3e-6 + 20 * 1.5e-5, 9)
@@ -356,6 +356,6 @@ describe('collectGrokSessions', () => {
     writeSession(home, 'grok-1', [
       turn('p1', { inputTokens: 10, outputTokens: 1 }, 'agent_message_chunk')
     ])
-    expect(collectGrokSessions(home)).toEqual([])
+    expect(collectGrokSessions(home).sessions).toEqual([])
   })
 })
