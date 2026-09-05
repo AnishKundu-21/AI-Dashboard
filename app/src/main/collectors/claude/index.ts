@@ -53,7 +53,12 @@ export const claudeAdapter: ProviderAdapter = {
     if (!ctx.networkQuotaRefresh) {
       return estimateSnapshot('claude', 'network quota refresh disabled', {
         plan_label: fallbackPlan.plan_label,
-        plan_source: fallbackPlan.plan_source
+        plan_source: fallbackPlan.plan_source,
+        transport: 'none',
+        unavailable: {
+          reason: 'network_disabled',
+          message: 'Network quota refresh is disabled in Settings.'
+        }
       })
     }
 
@@ -87,7 +92,12 @@ export const claudeAdapter: ProviderAdapter = {
           : `usage failed — ${err instanceof Error ? err.message : 'error'}`,
         {
           plan_label: fallbackPlan.plan_label,
-          plan_source: fallbackPlan.plan_source
+          plan_source: fallbackPlan.plan_source,
+          transport: 'http',
+          unavailable: {
+            reason: 'probe_failed',
+            message: 'The usage endpoint did not return a live figure.'
+          }
         }
       )
     }

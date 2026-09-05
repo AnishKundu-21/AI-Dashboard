@@ -227,6 +227,36 @@ export default function App() {
 
   const liveCount = quotas.filter((q) => q.confidence === 'live' && !q.stale).length
 
+  const diagnosticsSummary = useMemo(() => {
+    const enabled = new Set(collectorHealth.map((item) => item.provider))
+    const providerQuotas = quotas.filter((item) => enabled.has(item.provider))
+    const quotaIssues = providerQuotas.filter((item) =>
+      ['not_connected', 'auth_unreadable', 'probe_failed'].includes(
+        item.unavailable?.reason ?? ''
+      )
+    ).length
+    const quotaNotices =
+      providerQuotas.filter((item) => item.unavailable != null).length +
+      collectorHealth.filter(
+        (health) => !providerQuotas.some((quota) => quota.provider === health.provider)
+      ).length
+    return {
+      providers: collectorHealth.length,
+      activeCollectors: collectorHealth.filter(
+        (item) => item.watcher_status === 'watching' || item.watcher_status === 'polling'
+      ).length,
+      sessions: collectorHealth.reduce((total, item) => total + item.sessions_seen, 0),
+      liveQuotas: providerQuotas.filter(
+        (item) => item.confidence === 'live' && !item.stale
+      ).length,
+      quotaNotices,
+      issues:
+        collectorHealth.filter(
+          (item) => item.watcher_status === 'error' || item.watcher_status === 'missing' || item.last_error
+        ).length + quotaIssues
+    }
+  }, [collectorHealth, quotas])
+
   /** Per-day totals for the trend lines, ordered oldest → newest. */
   const series = useMemo(() => {
     const days = Array.from(new Set(daily.map((d) => d.day))).sort()
@@ -864,11 +894,44 @@ export default function App() {
             {collectorHealth.length} watching
           </span>
         </div>
+        <div className="health-summary panel" aria-label="Diagnostics summary">
+          <div>
+            <span>Enabled sources</span>
+            <strong>{diagnosticsSummary.providers}</strong>
+            <small>providers in scope</small>
+          </div>
+          <div>
+            <span>Active collectors</span>
+            <strong>{diagnosticsSummary.activeCollectors}</strong>
+            <small>watching or polling</small>
+          </div>
+          <div>
+            <span>Sessions indexed</span>
+            <strong>{diagnosticsSummary.sessions.toLocaleString()}</strong>
+            <small>across enabled sources</small>
+          </div>
+          <div>
+            <span>Live quota checks</span>
+            <strong>{diagnosticsSummary.liveQuotas}</strong>
+            <small>current provider figures</small>
+          </div>
+          <div>
+            <span>Quota notices</span>
+            <strong>{diagnosticsSummary.quotaNotices}</strong>
+            <small>explicit status or no snapshot</small>
+          </div>
+          <div className={diagnosticsSummary.issues > 0 ? 'attention' : ''}>
+            <span>Attention</span>
+            <strong>{diagnosticsSummary.issues}</strong>
+            <small>watcher or quota issues</small>
+          </div>
+        </div>
         <div className="grid grid-3">
           {collectorHealth.map((health) => (
             <HealthCard
               key={health.provider}
               health={health}
+              quota={quotas.find((item) => item.provider === health.provider)}
               busy={rescanning === health.provider}
               onRescan={(id) => void rescanProvider(id)}
             />

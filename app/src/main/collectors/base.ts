@@ -47,7 +47,8 @@ export function disconnectedSnapshot(
     source,
     auth_connected: false,
     stale: false,
-    live_captured_at: null
+    live_captured_at: null,
+    transport: 'none'
   }
 }
 
@@ -71,6 +72,11 @@ export function estimateSnapshot(
     stale: false,
     live_captured_at: null,
     products: extras.products,
-    remaining_text: extras.remaining_text
+    remaining_text: extras.remaining_text,
+    windows: extras.windows,
+    quota_windows: extras.quota_windows,
+    unavailable: extras.unavailable,
+    transport: extras.transport,
+    reset_credits: extras.reset_credits
   }
 }

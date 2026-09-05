@@ -31,7 +31,12 @@ export const codexAdapter: ProviderAdapter = {
       return estimateSnapshot('codex', 'network quota refresh disabled', {
         plan_label: ctx.settings.plans?.codex?.value ?? null,
         plan_source:
-          ctx.settings.plans?.codex?.mode === 'manual' ? 'user' : 'unknown'
+          ctx.settings.plans?.codex?.mode === 'manual' ? 'user' : 'unknown',
+        transport: 'none',
+        unavailable: {
+          reason: 'network_disabled',
+          message: 'Network quota refresh is disabled in Settings.'
+        }
       })
     }
 
@@ -85,7 +90,12 @@ export const codexAdapter: ProviderAdapter = {
         {
           plan_label: ctx.settings.plans?.codex?.value ?? null,
           plan_source:
-            ctx.settings.plans?.codex?.mode === 'manual' ? 'user' : 'unknown'
+            ctx.settings.plans?.codex?.mode === 'manual' ? 'user' : 'unknown',
+          transport: 'http',
+          unavailable: {
+            reason: 'probe_failed',
+            message: 'The usage endpoint did not return a live figure.'
+          }
         }
       )
     }

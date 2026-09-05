@@ -66,6 +66,7 @@ export function mapGrokBilling(
     stale: false,
     live_captured_at:
       used != null ? (opts.capturedAt ?? new Date().toISOString()) : null,
+    transport: 'http',
     windows: [
       {
         label: periodTypeLabel(periodType) ?? 'Weekly',

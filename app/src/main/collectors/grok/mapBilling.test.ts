@@ -51,6 +51,7 @@ describe('mapGrokBilling', () => {
     expect(snap.products).toEqual({ GrokBuild: 18, GrokChat: 15 })
     expect(snap.plan_source).toBe('unknown')
     expect(snap.auth_connected).toBe(true)
+    expect(snap.transport).toBe('http')
   })
 
   it('treats an omitted creditUsagePercent as 0% live usage', () => {

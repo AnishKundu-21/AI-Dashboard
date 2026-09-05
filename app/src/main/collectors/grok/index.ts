@@ -27,7 +27,12 @@ export const grokAdapter: ProviderAdapter = {
     if (!ctx.networkQuotaRefresh) {
       return estimateSnapshot('grok', 'network quota refresh disabled', {
         plan_label: ctx.settings.plans?.grok?.value ?? null,
-        plan_source: ctx.settings.plans?.grok?.mode === 'manual' ? 'user' : 'unknown'
+        plan_source: ctx.settings.plans?.grok?.mode === 'manual' ? 'user' : 'unknown',
+        transport: 'none',
+        unavailable: {
+          reason: 'network_disabled',
+          message: 'Network quota refresh is disabled in Settings.'
+        }
       })
     }
 
@@ -58,7 +63,12 @@ export const grokAdapter: ProviderAdapter = {
         {
           plan_label: ctx.settings.plans?.grok?.value ?? null,
           plan_source:
-            ctx.settings.plans?.grok?.mode === 'manual' ? 'user' : 'unknown'
+            ctx.settings.plans?.grok?.mode === 'manual' ? 'user' : 'unknown',
+          transport: 'http',
+          unavailable: {
+            reason: 'probe_failed',
+            message: 'The billing endpoint did not return a live usage figure.'
+          }
         }
       )
     }
