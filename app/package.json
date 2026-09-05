@@ -16,11 +16,10 @@
     "test": "vitest run",
     "verify:real": "vitest run --config vitest.verify.config.ts --reporter=verbose",
     "test:watch": "vitest",
-    "rebuild:native": "electron-builder install-app-deps",
-    "postinstall": "electron-builder install-app-deps || echo Skip native rebuild (run npm run rebuild:native)"
+    "postinstall": "install-electron --no"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^13.0.3",
     "electron-updater": "^6.8.9",
     "zod": "^3.24.2"
   },
@@ -31,7 +30,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^34.3.0",
+    "electron": "^44.2.0",
     "electron-builder": "^25.1.8",
     "electron-vite": "^3.0.0",
     "react": "^18.3.1",
@@ -43,6 +42,7 @@
   "build": {
     "appId": "com.local.ai-usage-dashboard",
     "productName": "AI Usage Dashboard",
+    "npmRebuild": false,
     "directories": {
       "output": "release"
     },
