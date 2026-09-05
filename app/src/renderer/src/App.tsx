@@ -36,6 +36,7 @@ import { SessionsTable, type SessionSort } from './components/SessionsTable'
 import { AlertStack } from './components/AlertStack'
 import { ProjectionCard } from './components/ProjectionCard'
 import { HealthCard } from './components/HealthCard'
+import { Onboarding } from './components/Onboarding'
 import { Toasts, type ToastItem } from './components/Toasts'
 import { IconClose, IconSearch, IconWarning } from './components/Icons'
 import {
@@ -313,6 +314,32 @@ export default function App() {
     setSettings(next)
     pushToast('Settings saved')
     await load()
+  }
+
+  const finishOnboarding = async (
+    enabledProviders: Record<ProviderId, boolean>,
+    scan: boolean
+  ) => {
+    setRefreshing(scan)
+    try {
+      const next = await window.api.setSettings({
+        ...(scan ? { enabled_providers: enabledProviders } : {}),
+        ...(scan ? {} : { onboarding_completed: true })
+      })
+      if (scan) {
+        // Keep onboarding open and retryable until the initial scan has
+        // completed. Provider selections are durable even if a refresh fails.
+        await window.api.refreshQuotas()
+        const completed = await window.api.setSettings({ onboarding_completed: true })
+        setSettings(completed)
+      } else {
+        setSettings(next)
+      }
+      await load()
+      pushToast(scan ? 'Setup complete — usage is updating' : 'Setup skipped — change it any time in Settings')
+    } finally {
+      setRefreshing(false)
+    }
   }
 
   const rescanProvider = async (id: ProviderId) => {
@@ -880,45 +907,50 @@ export default function App() {
               : settingsView
 
   return (
-    <div className={`shell${collapsed ? ' collapsed' : ''}`}>
-      <SideNav
-        view={view}
-        onView={setView}
-        collapsed={collapsed}
-        onToggleCollapsed={() => setCollapsed(!collapsed)}
-        counts={{
-          overview: { value: alerts.length, hot: true },
-          sessions: { value: sessions.length },
-          health: {
-            value: collectorHealth.filter((h) => h.watcher_status === 'error').length,
-            hot: true
-          }
-        }}
-        liveCount={liveCount}
-        lastSync={relativeTime(lastSync, now)}
-      />
-
-      <div className="main">
-        <TopBar
-          title={meta.title}
-          provider={provider}
-          providers={enabledProviders}
-          onProvider={setProvider}
-          rangeDays={rangeDays}
-          onRange={setRangeDays}
-          refreshing={refreshing}
-          onRefresh={() => void onRefresh()}
-          onExport={(f) => void onExport(f)}
-          theme={theme}
-          onTheme={setTheme}
+    <>
+      <div className={`shell${collapsed ? ' collapsed' : ''}`}>
+        <SideNav
+          view={view}
+          onView={setView}
+          collapsed={collapsed}
+          onToggleCollapsed={() => setCollapsed(!collapsed)}
+          counts={{
+            overview: { value: alerts.length, hot: true },
+            sessions: { value: sessions.length },
+            health: {
+              value: collectorHealth.filter((h) => h.watcher_status === 'error').length,
+              hot: true
+            }
+          }}
+          liveCount={liveCount}
+          lastSync={relativeTime(lastSync, now)}
         />
-        <main className="content" key={view}>
-          {body}
-        </main>
-      </div>
 
-      <Toasts items={toasts} />
-    </div>
+        <div className="main">
+          <TopBar
+            title={meta.title}
+            provider={provider}
+            providers={enabledProviders}
+            onProvider={setProvider}
+            rangeDays={rangeDays}
+            onRange={setRangeDays}
+            refreshing={refreshing}
+            onRefresh={() => void onRefresh()}
+            onExport={(f) => void onExport(f)}
+            theme={theme}
+            onTheme={setTheme}
+          />
+          <main className="content" key={view}>
+            {body}
+          </main>
+        </div>
+
+        <Toasts items={toasts} />
+      </div>
+      {settings && !settings.onboarding_completed ? (
+        <Onboarding settings={settings} health={collectorHealth} onFinish={finishOnboarding} />
+      ) : null}
+    </>
   )
 }
 

@@ -84,9 +84,18 @@ export function SettingsPanel({ settings, onChange }: Props) {
             <h3>Providers</h3>
             <p>Choose which local AI tools the dashboard scans and displays</p>
           </div>
-          <span className="status plain">
-            {providerIds().filter((id) => isProviderEnabled(settings, id)).length} enabled
-          </span>
+          <div className="card-head-actions">
+            <button
+              className="btn ghost compact"
+              type="button"
+              onClick={() => void onChange({ onboarding_completed: false })}
+            >
+              Run setup again
+            </button>
+            <span className="status plain">
+              {providerIds().filter((id) => isProviderEnabled(settings, id)).length} enabled
+            </span>
+          </div>
         </div>
         {providerIds().map((id) => {
           const meta = providerMeta(id)

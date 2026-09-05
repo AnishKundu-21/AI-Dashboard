@@ -16,6 +16,7 @@ describe('SettingsPanel', () => {
     expect(markup).toContain('Cursor CLI')
     expect(markup).toContain('OpenCode')
     expect(markup).toContain('aria-label="Disable OpenCode"')
+    expect(markup).toContain('Run setup again')
   })
 
   it('reflects disabled provider state without removing its selector', () => {

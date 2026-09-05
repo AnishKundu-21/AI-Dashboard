@@ -71,9 +71,16 @@ export function getSettings(db: Database.Database): AppSettings {
     | { value: string }
     | undefined
   if (!row) {
-    return AppSettingsSchema.parse({})
+    // Do not force an onboarding tour onto an existing installation that has
+    // never changed a setting. A missing row is the one reliable first-run
+    // signal; once settings are written, the schema default keeps old rows
+    // backward-compatible.
+    return AppSettingsSchema.parse({ onboarding_completed: false })
   }
-  return AppSettingsSchema.parse(JSON.parse(row.value))
+  const parsed = AppSettingsSchema.parse(JSON.parse(row.value))
+  // Rows written before onboarding existed represent an established install,
+  // so they should not interrupt an existing user's dashboard with a tour.
+  return { ...parsed, onboarding_completed: parsed.onboarding_completed ?? true }
 }
 
 export function setSettings(

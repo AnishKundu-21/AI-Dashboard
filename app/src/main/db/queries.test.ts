@@ -136,6 +136,26 @@ describe('provider enablement', () => {
   })
 })
 
+describe('onboarding settings', () => {
+  it('identifies a new database while treating legacy settings as established', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+
+    expect(getSettings(db).onboarding_completed).toBe(false)
+
+    setSettings(db, { display_currency: 'EUR' })
+    expect(getSettings(db).onboarding_completed).toBe(false)
+
+    raw
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('app', ?)")
+      .run(JSON.stringify({ display_currency: 'USD' }))
+    expect(getSettings(db).onboarding_completed).toBe(true)
+    raw.close()
+  })
+})
+
 describe('usage analytics detail', () => {
   it('preserves every token class and cost signal by day, provider, and model', () => {
     const raw = new DatabaseSync(':memory:')

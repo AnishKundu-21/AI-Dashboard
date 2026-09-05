@@ -85,6 +85,8 @@ export const AppSettingsSchema = z.object({
   notify_enabled: z.boolean().default(true),
   network_quota_refresh: z.boolean().default(true),
   retention_days: z.number().int().positive().default(90),
+  /** Missing on older saved rows; the database reader treats those as complete. */
+  onboarding_completed: z.boolean().optional(),
   /** Missing entries are enabled; explicit false disables collection and display. */
   enabled_providers: z.record(ProviderIdSchema, z.boolean()).default({}),
   /** Per-model price overrides, keyed by the exact provider model id. */
