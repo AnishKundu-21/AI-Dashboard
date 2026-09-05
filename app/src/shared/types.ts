@@ -89,6 +89,48 @@ export const AppSettingsSchema = z.object({
 })
 export type AppSettings = z.infer<typeof AppSettingsSchema>
 
+/**
+ * One quota window, normalised across providers.
+ *
+ * `id` is what makes a sparse update merge onto the row an earlier probe drew,
+ * rather than opening a second one; `kind` is what lets the UI order and label
+ * windows without knowing which provider produced them.
+ */
+export const UsageWindowSchema = z.object({
+  id: z.string(),
+  kind: z.enum(['session', 'weekly', 'monthly', 'other']),
+  label: z.string(),
+  used_pct: z.number().min(0).max(100).nullable(),
+  resets_at: z.string().nullable(),
+  window_duration_mins: z.number().nullable()
+})
+export type UsageWindow = z.infer<typeof UsageWindowSchema>
+
+/**
+ * Why a quota figure is missing.
+ *
+ * These are genuinely different situations and were previously collapsed into
+ * `estimate`: an API-key account *cannot* have subscription windows, which is
+ * not the same as a probe that failed this time and will likely succeed next.
+ */
+export const QuotaUnavailableSchema = z.object({
+  reason: z.enum([
+    /** No credentials found for this provider. */
+    'not_connected',
+    /** Credentials exist but are not in a form this app recognises. */
+    'auth_unreadable',
+    /** This account has no subscription windows at all (API key, 3P provider). */
+    'unsupported',
+    /** The probe failed this time; the last good value may still be shown. */
+    'probe_failed',
+    /** The user turned network quota refresh off. */
+    'network_disabled'
+  ]),
+  /** Short, user-facing, never carrying a token or a URL with credentials. */
+  message: z.string().optional()
+})
+export type QuotaUnavailable = z.infer<typeof QuotaUnavailableSchema>
+
 export const QuotaSnapshotSchema = z.object({
   provider: ProviderIdSchema,
   captured_at: z.string(),
@@ -114,7 +156,24 @@ export const QuotaSnapshotSchema = z.object({
     )
     .optional(),
   products: z.record(z.string(), z.number()).optional(),
-  remaining_text: z.string().optional()
+  remaining_text: z.string().optional(),
+  /**
+   * The normalised windows. `windows` above is the older, display-shaped list
+   * kept for the current UI; this is what new code should read.
+   */
+  quota_windows: z.array(UsageWindowSchema).optional(),
+  /** Present exactly when there is no usable figure, saying why. */
+  unavailable: QuotaUnavailableSchema.optional(),
+  /** Which mechanism produced this snapshot, for the diagnostics view. */
+  transport: z.enum(['app-server', 'http', 'local', 'none']).optional(),
+  /** Provider plan/account extras worth surfacing, e.g. Codex reset credits. */
+  reset_credits: z
+    .object({
+      available_count: z.number(),
+      next_expires_at: z.string().nullable(),
+      title: z.string().nullable()
+    })
+    .optional()
 })
 export type QuotaSnapshot = z.infer<typeof QuotaSnapshotSchema>
 

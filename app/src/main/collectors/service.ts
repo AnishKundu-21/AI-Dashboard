@@ -113,11 +113,17 @@ function preserveLastLiveSnapshot(
   previous: QuotaSnapshot | undefined,
   ctx: AdapterContext
 ): QuotaSnapshot {
+  // `unsupported` is authoritative: an account that cannot have subscription
+  // windows will not start reporting them, so it must replace a previous live
+  // value rather than letting a stale one persist forever.
+  if (refreshed.unavailable?.reason === 'unsupported') return refreshed
+
   const refreshFailed =
     ctx.networkQuotaRefresh &&
     refreshed.auth_connected &&
-    refreshed.confidence === 'estimate' &&
-    /failed|http\s+\d|fallback/i.test(refreshed.source)
+    (refreshed.unavailable?.reason === 'probe_failed' ||
+      (refreshed.confidence === 'estimate' &&
+        /failed|http\s+\d|fallback/i.test(refreshed.source)))
   const hasPreviousLive =
     previous?.auth_connected &&
     previous.confidence === 'live' &&

@@ -5,6 +5,8 @@ import { getCodexHome } from '../../util/paths'
 import { readCodexAuth } from './auth'
 import { mapCodexUsage } from './mapUsage'
 import { collectCodexSessions } from './sessions'
+import { AppServerFailure, readRateLimits } from './appServer'
+import { mapCodexRateLimits } from './mapRateLimits'
 import { getScanCache, markScanCacheDirty } from '../cache'
 import type { QuotaSnapshot } from '../../../shared/types'
 
@@ -33,6 +35,17 @@ export const codexAdapter: ProviderAdapter = {
       })
     }
 
+    // Codex's own local protocol first. It needs no scraped bearer token,
+    // refreshes auth itself, and reports both windows with their real
+    // durations plus reset-credit detail. The HTTP path below is a private,
+    // undocumented endpoint kept only as a fallback for older CLIs.
+    try {
+      return mapCodexRateLimits(await readRateLimits(), { settings: ctx.settings })
+    } catch (error) {
+      if (!(error instanceof AppServerFailure)) throw error
+      // Fall through to HTTP, and say so in the source line.
+    }
+
     const headers: Record<string, string> = {
       Authorization: `Bearer ${auth.access_token}`
     }
@@ -52,11 +65,16 @@ export const codexAdapter: ProviderAdapter = {
         resetCreditsAvailable = hasAvailableResetCredits(null, body)
       }
 
-      return mapCodexUsage(body, {
+      const snapshot = mapCodexUsage(body, {
         settings: ctx.settings,
         authConnected: true,
         resetCreditsAvailable
       })
+      return {
+        ...snapshot,
+        transport: 'http',
+        source: `${snapshot.source} · app-server unavailable`
+      }
     } catch (err) {
       const status = err instanceof HttpError ? err.status : null
       return estimateSnapshot(

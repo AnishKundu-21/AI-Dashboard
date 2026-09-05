@@ -89,6 +89,34 @@ Usage is now parsed into a canonical four-class token model
 - Clickable chart/model drill-down, session sorting, bounded pagination, and collector health/rescan controls
 - Sandboxed preload, trusted-sender IPC checks, branded Windows icon, NSIS installer, and optional HTTPS auto-update feed
 
+### Phase B — quota transports
+
+- **Codex quota comes from `codex app-server`**, its own local JSON-RPC
+  protocol (`account/rateLimits/read`), over a long-lived child process. No
+  scraped bearer token, auth refreshed by the CLI, and strictly more data than
+  the private HTTP endpoint returned: both windows with their real durations,
+  the plan, and reset credits with titles and expiry. The old
+  `chatgpt.com/backend-api/wham/usage` path remains as a labelled fallback for
+  CLIs without `app-server`.
+- **Claude quota still reads `api.anthropic.com/api/oauth/usage` directly.**
+  The Claude Agent SDK exposes the same figures, but its method is named
+  `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET` and its own
+  docstring says the windows come "from the claude.ai usage endpoint" — the
+  same source. Routing through it would add a heavy dependency and a spawned
+  process without removing the underlying fragility.
+- **Credential reading is tolerant and diagnoses precisely.** Several known
+  token shapes are tried, and a failure now distinguishes *missing* from
+  *unparseable* from *present but unrecognised* — the last of which reports the
+  top-level key names it did find. The single hardcoded path previously failed
+  on a real machine after a CLI update and reported "install Claude Code and
+  login" at a working installation.
+- **Quota windows are normalised** to `{id, kind, label, used_pct, resets_at,
+  window_duration_mins}` across providers, and missing figures carry an
+  explicit reason: `not_connected`, `auth_unreadable`, `unsupported`,
+  `probe_failed` or `network_disabled`. `unsupported` is authoritative — an
+  API-key account cannot have subscription windows, so it replaces a previous
+  live value instead of being retried as a transient failure.
+
 ## Release configuration
 
 - Set `AI_USAGE_UPDATE_URL` to an HTTPS generic electron-builder update feed to enable update checks in packaged builds.

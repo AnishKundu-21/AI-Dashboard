@@ -2,7 +2,11 @@ import type { ProviderAdapter, AdapterContext, CollectResult } from '../base'
 import { disconnectedSnapshot, estimateSnapshot } from '../base'
 import { fetchJson, HttpError } from '../http'
 import { getClaudeHome } from '../../util/paths'
-import { readClaudeAuth, isClaudeTokenExpired } from './auth'
+import {
+  describeClaudeAuthProblem,
+  isClaudeTokenExpired,
+  readClaudeAuthResult
+} from './auth'
 import { mapClaudeUsage } from './mapUsage'
 import { collectClaudeSessions } from './sessions'
 import { resolvePlan } from '../plan'
@@ -15,17 +19,29 @@ export const claudeAdapter: ProviderAdapter = {
   id: 'claude',
 
   async isConnected(): Promise<boolean> {
-    return readClaudeAuth(getClaudeHome()) != null
+    return readClaudeAuthResult(getClaudeHome()).ok
   },
 
   async refreshQuota(ctx: AdapterContext): Promise<QuotaSnapshot> {
-    const auth = readClaudeAuth(getClaudeHome())
-    if (!auth) {
-      return disconnectedSnapshot(
-        'claude',
-        'no ~/.claude credentials — install Claude Code and login'
-      )
+    const result = readClaudeAuthResult(getClaudeHome())
+    if (!result.ok) {
+      // Say which problem it actually is. "Install Claude Code and login" sent
+      // users to fix a working login when the real cause was a credentials
+      // format this app no longer recognised.
+      return {
+        ...disconnectedSnapshot(
+          'claude',
+          describeClaudeAuthProblem(result.problem)
+        ),
+        transport: 'none',
+        unavailable: {
+          reason:
+            result.problem.reason === 'missing' ? 'not_connected' : 'auth_unreadable',
+          message: describeClaudeAuthProblem(result.problem)
+        }
+      }
     }
+    const auth = result.auth
 
     const fallbackPlan = resolvePlan(
       ctx.settings,
@@ -44,9 +60,9 @@ export const claudeAdapter: ProviderAdapter = {
     // Prefer re-read if expired — CLI may have refreshed disk token
     let token = auth.token
     if (isClaudeTokenExpired(auth)) {
-      const again = readClaudeAuth(getClaudeHome())
-      if (again && !isClaudeTokenExpired(again)) {
-        token = again.token
+      const again = readClaudeAuthResult(getClaudeHome())
+      if (again.ok && !isClaudeTokenExpired(again.auth)) {
+        token = again.auth.token
       }
     }
 

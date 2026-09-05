@@ -14,6 +14,7 @@ import {
 import { getAppDataDir, getLogsDir } from './util/paths'
 import { applyRetention } from './db/retention'
 import { flushScanCache } from './collectors/cache'
+import { stopAppServer } from './collectors/codex/appServer'
 
 const windowIcon = join(__dirname, '../../resources/icon.png')
 
@@ -136,6 +137,7 @@ app.on('window-all-closed', () => {
     stopQuotaPolling()
     stopRealtimeWatchers()
     flushScanCache(true)
+    stopAppServer()
     closeDatabase()
     app.quit()
   }
@@ -147,5 +149,7 @@ app.on('before-quit', () => {
   // Force the flush so the next launch resumes from the cache rather than
   // re-parsing the whole transcript history.
   flushScanCache(true)
+  // The app-server is a child process; it must not outlive the app.
+  stopAppServer()
   closeDatabase()
 })
