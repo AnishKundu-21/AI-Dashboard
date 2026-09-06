@@ -89,25 +89,6 @@ describe('buildProjectionCard', () => {
     expect(windows.map((window) => window.kind)).toEqual(['session', 'weekly', 'monthly'])
   })
 
-  it('treats a short session limit as a reset-bound snapshot, not a daily forecast', () => {
-    const card = buildProjectionCard(live, [], 7, {
-      id: 'session',
-      kind: 'session',
-      label: 'Session (5h)',
-      used_pct: 89,
-      resets_at: isoDaysFromNow(0),
-      window_duration_mins: 300
-    })
-    expect(card).toMatchObject({
-      window_kind: 'session',
-      daily_burn_pct: null,
-      days_to_empty: null,
-      resets_at: expect.any(String),
-      forecast_confidence: 'unknown'
-    })
-    expect(card.detail).toContain('89% used')
-  })
-
   it('warns when near exhaustion', () => {
     const card = buildProjectionCard(
       { ...live, used_pct: 92, remaining_pct: 8 },

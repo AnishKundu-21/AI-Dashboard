@@ -494,7 +494,7 @@ describe('quota snapshot detail persistence', () => {
     raw.close()
   })
 
-  it('keeps stored Codex session and weekly windows separate in forecasts', () => {
+  it('uses only long-horizon Codex allowance windows in forecasts', () => {
     const raw = new DatabaseSync(':memory:')
     raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
     for (const migration of MIGRATIONS) raw.exec(migration.sql)
@@ -531,13 +531,6 @@ describe('quota snapshot detail persistence', () => {
     const observed = getBurn(db, 'codex', 7).filter((point) => !point.projected)
     expect(observed.at(-1)?.used_pct).toBe(4)
     expect(getProjections(db).filter((card) => card.provider === 'codex')).toMatchObject([
-      {
-        id: 'codex:primary',
-        window_kind: 'session',
-        window_label: 'Session',
-        daily_burn_pct: null,
-        days_to_empty: null
-      },
       { id: 'codex:secondary', window_kind: 'weekly', window_label: 'Weekly' }
     ])
     const codexSeries = getBurnSeries(db, 'codex', 7)

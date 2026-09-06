@@ -48,9 +48,7 @@ export function ProjectionCard({ projection: p, quota }: Props) {
       ) : null}
 
       <div className="projection-confidence">
-        {p.window_kind === 'session'
-          ? 'Session snapshot — no pace forecast'
-          : <>Forecast confidence: <strong>{p.forecast_confidence}</strong></>}
+        Forecast confidence: <strong>{p.forecast_confidence}</strong>
       </div>
 
       {p.recommendation ? (

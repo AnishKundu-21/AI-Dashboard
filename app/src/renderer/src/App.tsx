@@ -1011,7 +1011,7 @@ export default function App() {
           <div className="grid grid-3">
             {activeProjections.map((p) => (
               <ProjectionCard
-                key={p.provider}
+                key={p.id}
                 projection={p}
                 quota={quotas.find((q) => q.provider === p.provider)}
               />
@@ -1023,8 +1023,8 @@ export default function App() {
       <article className="panel">
         <div className="card-head">
           <div>
-            <h3>Weekly burn detail</h3>
-            <p>All-model weekly allowance snapshots with a dashed forecast beyond the last measurement</p>
+            <h3>Allowance burn detail</h3>
+            <p>Separate weekly, monthly, and model allowance snapshots with a dashed forecast beyond the last measurement</p>
           </div>
           <select
             className="select"
@@ -1036,7 +1036,7 @@ export default function App() {
               <option value={burnProvider}>No providers enabled</option>
             ) : (
               <>
-                <option value="all">All models</option>
+                <option value="all">All allowance windows</option>
                 {quotaProviders.map((id) => (
                   <option key={id} value={id}>
                     {providerMeta(id).name}

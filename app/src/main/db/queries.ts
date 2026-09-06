@@ -1313,7 +1313,9 @@ export function getProjections(db: Database.Database): ProjectionCard[] {
       tokens_total: number
     }>
 
-    return forecastWindows(q).map((window) => buildProjectionCard(q, dailyRows, 7, window))
+    return forecastWindows(q)
+      .filter((window) => window.kind === 'weekly' || window.kind === 'monthly')
+      .map((window) => buildProjectionCard(q, dailyRows, 7, window))
   })
 }
 
