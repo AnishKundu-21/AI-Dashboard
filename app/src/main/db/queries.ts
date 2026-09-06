@@ -16,6 +16,7 @@ import type {
   CollectorHealth,
   DailyUsagePoint,
   ModelMixItem,
+  ModelUsagePoint,
   OverviewMetrics,
   ProjectionCard,
   ProviderCost,
@@ -604,6 +605,160 @@ export function getDailyUsage(
       cache_savings_usd: Math.round(point.cache_savings_usd * 1e6) / 1e6
     }))
     .sort((a, b) => a.bucket_start_ms - b.bucket_start_ms || a.provider.localeCompare(b.provider))
+}
+
+/**
+ * Event-grain usage series keyed by model. Unlike the period-level model mix,
+ * this preserves the selected time resolution so model trends can be compared
+ * on the same chart as provider trends.
+ */
+export function getModelUsage(
+  db: Database.Database,
+  provider: ProviderFilter,
+  selection: PeriodSelection,
+  resolution: UsageResolution = 'day'
+): ModelUsagePoint[] {
+  const settings = getSettings(db)
+  const timezone = settings.timezone
+  const enabled = enabledProviderIds(settings)
+  const period = resolveSelectedPeriod(timezone, selection)
+  if (period.current.days === null && resolution !== 'day') {
+    throw new RangeError('Lifetime usage charts support daily resolution only.')
+  }
+  if (period.current.days !== null && period.current.days > MAX_CUSTOM_ANALYTICS_DAYS) {
+    throw new RangeError(
+      `Usage charts support custom ranges up to ${MAX_CUSTOM_ANALYTICS_DAYS} days.`
+    )
+  }
+  const bucketOf = makeUsageBucketFormatter(timezone, resolution)
+
+  const rows = db
+    .prepare(
+      `
+    SELECT provider, model, ts_ms, session_id,
+           uncached_input, cached_input, cache_creation, output, reasoning,
+           (uncached_input + cached_input + cache_creation + output) AS tokens_total,
+           COALESCE(cost_usd, 0) AS api_equiv_usd,
+           COALESCE(reported_cost_usd, 0) AS provider_cost_usd,
+           COALESCE(cache_savings_usd, 0) AS cache_savings_usd,
+           CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END AS unpriced_calls
+    FROM usage_events
+    WHERE (@startMs IS NULL OR ts_ms >= @startMs)
+      AND (@endMs IS NULL OR ts_ms < @endMs)
+      AND ${providerClause(provider, enabled)}
+  `
+    )
+    .all({ startMs: period.current.startMs, endMs: period.current.endMs, provider }) as Array<{
+      provider: ProviderId
+      model: string
+      ts_ms: number
+      session_id: string
+      tokens_total: number
+      uncached_input: number
+      cached_input: number
+      cache_creation: number
+      output: number
+      reasoning: number
+      api_equiv_usd: number
+      provider_cost_usd: number
+      cache_savings_usd: number
+      unpriced_calls: number
+    }>
+
+  const grouped = new Map<string, ModelUsagePoint & { sessions: Set<string> }>()
+  for (const row of rows) {
+    const model = normalizeModelName(row.provider, row.model)
+    if (!model) continue
+    const day = bucketOf(row.ts_ms)
+    const key = `${day}\u0000${row.provider}\u0000${model.toLowerCase()}`
+    let current = grouped.get(key)
+    if (!current) {
+      current = {
+        day,
+        bucket_start_ms: usageBucketStartMs(row.ts_ms, timezone, resolution),
+        provider: row.provider,
+        model,
+        tokens_total: 0,
+        uncached_input: 0,
+        cached_input: 0,
+        cache_creation: 0,
+        output: 0,
+        reasoning: 0,
+        model_calls: 0,
+        session_count: 0,
+        api_equiv_usd: 0,
+        provider_cost_usd: 0,
+        cache_savings_usd: 0,
+        unpriced_calls: 0,
+        sessions: new Set<string>()
+      }
+      grouped.set(key, current)
+    }
+    current.tokens_total += row.tokens_total
+    current.uncached_input += row.uncached_input
+    current.cached_input += row.cached_input
+    current.cache_creation += row.cache_creation
+    current.output += row.output
+    current.reasoning += row.reasoning
+    current.model_calls += 1
+    current.api_equiv_usd += row.api_equiv_usd
+    current.provider_cost_usd += row.provider_cost_usd
+    current.cache_savings_usd += row.cache_savings_usd
+    current.unpriced_calls += row.unpriced_calls
+    current.sessions.add(row.session_id)
+  }
+
+  const series = Array.from(
+    new Set(Array.from(grouped.values()).map((point) => `${point.provider}\u0000${point.model}`))
+  ).map((key) => {
+    const [providerId, model] = key.split('\u0000') as [ProviderId, string]
+    return { provider: providerId, model }
+  })
+  if (period.current.startDay && period.current.endDay) {
+    const completedHourStart = usageBucketStartMs(Date.now(), timezone, 'hour')
+    for (const bucket of enumerateUsageBucketPoints(
+      period.current.startDay,
+      period.current.endDay,
+      timezone,
+      resolution,
+      resolution === 'hour' ? completedHourStart : undefined
+    )) {
+      for (const { provider: providerId, model } of series) {
+        const key = `${bucket.key}\u0000${providerId}\u0000${model.toLowerCase()}`
+        if (!grouped.has(key)) {
+          grouped.set(key, {
+            day: bucket.key,
+            bucket_start_ms: bucket.startMs,
+            provider: providerId,
+            model,
+            tokens_total: 0,
+            uncached_input: 0,
+            cached_input: 0,
+            cache_creation: 0,
+            output: 0,
+            reasoning: 0,
+            model_calls: 0,
+            session_count: 0,
+            api_equiv_usd: 0,
+            provider_cost_usd: 0,
+            cache_savings_usd: 0,
+            unpriced_calls: 0,
+            sessions: new Set<string>()
+          })
+        }
+      }
+    }
+  }
+
+  return Array.from(grouped.values())
+    .map(({ sessions, ...point }) => ({
+      ...point,
+      session_count: sessions.size,
+      api_equiv_usd: Math.round(point.api_equiv_usd * 1e6) / 1e6,
+      provider_cost_usd: Math.round(point.provider_cost_usd * 1e6) / 1e6,
+      cache_savings_usd: Math.round(point.cache_savings_usd * 1e6) / 1e6
+    }))
+    .sort((a, b) => a.bucket_start_ms - b.bucket_start_ms || a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model))
 }
 
 export function getSessions(

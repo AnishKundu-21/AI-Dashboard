@@ -1,11 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import type { ModelMixItem, ProviderCost } from '@shared/types'
-import { AnalyticsRankChart, AnalyticsTable } from './AnalyticsBreakdown'
+import type { ModelMixItem, ModelUsagePoint, ProviderCost } from '@shared/types'
+import { AnalyticsRankChart, AnalyticsTable, ModelUsageChart } from './AnalyticsBreakdown'
 
 vi.mock('../lib/hooks', () => ({
   useElementWidth: () => [{ current: null }, 620],
-  usePrefersReducedMotion: () => true
+  usePrefersReducedMotion: () => true,
+  useChartHover: () => ({ probe: { index: null, x: 0, y: 0 }, onMove: vi.fn(), onLeave: vi.fn() })
 }))
 
 const provider: ProviderCost = {
@@ -28,6 +29,13 @@ const model: ModelMixItem = {
   ...provider,
   model: 'claude-sonnet-4-5',
   share: 1
+}
+
+const modelPoint: ModelUsagePoint = {
+  ...provider,
+  model: 'claude-sonnet-4-5',
+  day: '2026-09-05',
+  bucket_start_ms: Date.parse('2026-09-05T00:00:00.000Z')
 }
 
 describe('analytics breakdown', () => {
@@ -65,5 +73,19 @@ describe('analytics breakdown', () => {
     ]) {
       expect(markup).toContain(heading)
     }
+  })
+
+  it('renders a model trend line with every observed model in its legend', () => {
+    const markup = renderToStaticMarkup(
+      <ModelUsageChart
+        rows={[modelPoint]}
+        metric="tokens_total"
+        resolution="day"
+        currency="USD"
+        locale="en-US"
+      />
+    )
+    expect(markup).toContain('Usage over time by model')
+    expect(markup).toContain('claude-sonnet-4-5')
   })
 })

@@ -14,6 +14,7 @@ import {
   getLatestQuotas,
   getCollectorHealth,
   getModelMix,
+  getModelUsage,
   getSessions,
   getSettings,
   setSettings
@@ -209,6 +210,18 @@ describe('usage analytics detail', () => {
       api_equiv_usd: 0.5,
       provider_cost_usd: 0.4,
       cache_savings_usd: 0.22,
+      unpriced_calls: 1
+    })
+
+    const modelSeries = getModelUsage(db, 'claude', 0)
+    expect(modelSeries).toHaveLength(1)
+    expect(modelSeries[0]).toMatchObject({
+      model: 'claude-sonnet-4-5',
+      provider: 'claude',
+      tokens_total: 407,
+      cached_input: 220,
+      model_calls: 2,
+      session_count: 1,
       unpriced_calls: 1
     })
 

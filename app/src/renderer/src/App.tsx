@@ -7,6 +7,7 @@ import type {
   CollectorHealth,
   DailyUsagePoint,
   ModelMixItem,
+  ModelUsagePoint,
   OverviewMetrics,
   ProjectionCard as ProjectionCardData,
   ProviderId,
@@ -27,6 +28,7 @@ import {
   ANALYTICS_METRICS,
   AnalyticsRankChart,
   AnalyticsTable,
+  ModelUsageChart,
   type AnalyticsMetric
 } from './components/AnalyticsBreakdown'
 import { SettingsPanel } from './components/SettingsPanel'
@@ -104,6 +106,7 @@ export default function App() {
   const [analyticsSnapshot, setAnalyticsSnapshot] = useState<AnalyticsSnapshot | null>(null)
   const [quotas, setQuotas] = useState<QuotaSnapshot[]>([])
   const [daily, setDaily] = useState<DailyUsagePoint[]>([])
+  const [modelUsage, setModelUsage] = useState<ModelUsagePoint[]>([])
   const [burnSeries, setBurnSeries] = useState<BurnSeries[]>([])
   const [models, setModels] = useState<ModelMixItem[]>([])
   const [sessions, setSessions] = useState<SessionRow[]>([])
@@ -169,10 +172,13 @@ export default function App() {
     try {
       setError(null)
       const base = { provider, ...activePeriod }
-      const [ov, q, d, burnList, m, s, p, a, st, health] = await Promise.all([
+      const [ov, q, d, modelSeries, burnList, m, s, p, a, st, health] = await Promise.all([
         window.api.getOverview(base),
         window.api.getQuotas(),
         window.api.getDailyUsage({ ...base, resolution: chartResolution }),
+        view === 'analytics'
+          ? window.api.getModelUsage({ ...base, resolution: chartResolution })
+          : Promise.resolve([]),
         window.api.getBurnSeries({ provider: 'all', range_days: rangeDays }),
         window.api.getModelMix(base),
         window.api.getSessions({
@@ -195,6 +201,7 @@ export default function App() {
       setOverview(ov)
       setQuotas(q)
       setDaily(d)
+      setModelUsage(modelSeries)
       setBurnSeries(burnList)
       setModels(m)
       setSessions(s)
@@ -790,6 +797,24 @@ export default function App() {
                 currency={currency}
                 locale={locale}
                 onSelectModel={(model) => setSelectedModel(model === selectedModel ? undefined : model)}
+              />
+            </div>
+          </article>
+
+          <article className="panel model-usage-panel">
+            <div className="card-head">
+              <div>
+                <h3>Usage over time by model</h3>
+                <p>Every observed model in the selected window · click legend items to focus the chart</p>
+              </div>
+            </div>
+            <div className="card-body">
+              <ModelUsageChart
+                rows={modelUsage}
+                metric={analyticsMetric}
+                resolution={chartResolution}
+                currency={currency}
+                locale={locale}
               />
             </div>
           </article>

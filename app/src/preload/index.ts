@@ -7,6 +7,7 @@ import {
   GetBurnInput,
   GetBurnSeriesInput,
   GetDailyUsageInput,
+  GetModelUsageInput,
   GetOverviewInput,
   GetSessionsInput,
   IPC,
@@ -25,6 +26,8 @@ const api: DashboardApi = {
   getQuotas: () => ipcRenderer.invoke(IPC.getQuotas),
   getDailyUsage: (input) =>
     ipcRenderer.invoke(IPC.getDailyUsage, GetDailyUsageInput.parse(input ?? {})),
+  getModelUsage: (input) =>
+    ipcRenderer.invoke(IPC.getModelUsage, GetModelUsageInput.parse(input ?? {})),
   getBurn: (input) => ipcRenderer.invoke(IPC.getBurn, GetBurnInput.parse(input)),
   getBurnSeries: (input) =>
     ipcRenderer.invoke(IPC.getBurnSeries, GetBurnSeriesInput.parse(input ?? {})),

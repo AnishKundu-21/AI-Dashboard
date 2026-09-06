@@ -438,6 +438,12 @@ export const DailyUsagePointSchema = z.object({
 })
 export type DailyUsagePoint = z.infer<typeof DailyUsagePointSchema>
 
+/** Event-grain usage series keyed by provider and normalized model name. */
+export const ModelUsagePointSchema = DailyUsagePointSchema.extend({
+  model: z.string()
+})
+export type ModelUsagePoint = z.infer<typeof ModelUsagePointSchema>
+
 export const ModelMixItemSchema = z.object({
   model: z.string(),
   provider: ProviderIdSchema,
