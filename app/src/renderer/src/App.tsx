@@ -97,6 +97,8 @@ export default function App() {
   const [dailyMetric, setDailyMetric] = useState<DailyMetric>('tokens')
   const [usageResolution, setUsageResolution] = useState<UsageResolution>('day')
   const [analyticsMetric, setAnalyticsMetric] = useState<AnalyticsMetric>('tokens_total')
+  const [modelChartResolution, setModelChartResolution] = useState<UsageResolution>('day')
+  const [modelChartMetric, setModelChartMetric] = useState<AnalyticsMetric>('tokens_total')
   const [modelChartFilter, setModelChartFilter] = useState('all')
 
   // Requests --------------------------------------------------------------
@@ -160,7 +162,10 @@ export default function App() {
     if (isLifetimeAnalytics && usageResolution !== 'day') {
       setUsageResolution('day')
     }
-  }, [isLifetimeAnalytics, usageResolution])
+    if (isLifetimeAnalytics && modelChartResolution !== 'day') {
+      setModelChartResolution('day')
+    }
+  }, [isLifetimeAnalytics, modelChartResolution, usageResolution])
 
   const pushToast = useCallback((message: string, tone: ToastItem['tone'] = 'ok') => {
     const id = ++toastId.current
@@ -247,7 +252,7 @@ export default function App() {
     void window.api.getModelUsage({
       provider,
       ...activePeriod,
-      resolution: chartResolution,
+      resolution: modelChartResolution,
       model_key: modelChartFilter === 'all' ? undefined : modelChartFilter
     }).then((rows) => {
       if (!cancelled) setModelUsage(rows)
@@ -257,7 +262,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [activePeriod, chartResolution, lastSync, modelChartFilter, provider, view])
+  }, [activePeriod, lastSync, modelChartFilter, modelChartResolution, provider, view])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -836,12 +841,35 @@ export default function App() {
                 <h3>Usage over time by model</h3>
                 <p>Every observed model in the selected window · choose a model to focus the chart</p>
               </div>
+              <div className="analytics-chart-controls">
+                <select
+                  className="select analytics-metric-select"
+                  value={modelChartResolution}
+                  aria-label="Model usage chart resolution"
+                  onChange={(e) => setModelChartResolution(e.target.value as UsageResolution)}
+                >
+                  <option value="hour" disabled={isLifetimeAnalytics}>Hourly</option>
+                  <option value="day">Daily</option>
+                  <option value="week" disabled={isLifetimeAnalytics}>Weekly (Mon start)</option>
+                  <option value="month" disabled={isLifetimeAnalytics}>Monthly</option>
+                </select>
+                <select
+                  className="select analytics-metric-select"
+                  value={modelChartMetric}
+                  aria-label="Model usage chart metric"
+                  onChange={(e) => setModelChartMetric(e.target.value as AnalyticsMetric)}
+                >
+                  {ANALYTICS_METRICS.map((metric) => (
+                    <option key={metric.value} value={metric.value}>{metric.label}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="card-body">
               <ModelUsageChart
                 rows={modelUsage}
-                metric={analyticsMetric}
-                resolution={chartResolution}
+                metric={modelChartMetric}
+                resolution={modelChartResolution}
                 currency={currency}
                 locale={locale}
                 availableModels={models}
