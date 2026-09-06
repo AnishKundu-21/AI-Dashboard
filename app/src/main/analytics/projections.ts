@@ -53,6 +53,7 @@ export function buildProjectionCard(
     provider: q.provider,
     window_kind: window?.kind ?? kindFromLabel(label),
     window_label: label,
+    resets_at: window?.resets_at ?? q.reset_at,
     forecast_confidence: confidence
   } as const
 
@@ -68,7 +69,24 @@ export function buildProjectionCard(
     }
   }
 
-  if (q.confidence !== 'live' || used == null) {
+  // A short session allowance is a current guardrail, not a multi-day budget.
+  // It resets too often for day-based pace or runway to mean anything.
+  if (window?.kind === 'session') {
+    return {
+      ...base,
+      forecast_confidence: 'unknown',
+      headline: 'Session snapshot',
+      detail: used == null
+        ? 'No current session usage figure from the provider.'
+        : `${Math.round(used)}% used in the current ${label.toLowerCase()} window.`,
+      level: used != null && used >= 70 ? 'warn' : 'info',
+      days_to_empty: null,
+      daily_burn_pct: null,
+      recommendation: 'Short session windows show current usage and reset time only; no daily pace is projected.'
+    }
+  }
+
+  if (q.confidence !== 'live' || used == null || !isLongHorizonWindow(window?.kind)) {
     const tokenBurn = avgDailyTokens(recentDaily)
     return {
       ...base,
@@ -193,6 +211,10 @@ function kindFromLabel(label: string): UsageWindow['kind'] {
   if (normalized.includes('week') || normalized.includes('seven day')) return 'weekly'
   if (normalized.includes('month')) return 'monthly'
   return 'other'
+}
+
+function isLongHorizonWindow(kind: UsageWindow['kind'] | undefined): boolean {
+  return kind === 'weekly' || kind === 'monthly'
 }
 
 export function willExhaustWithinDays(

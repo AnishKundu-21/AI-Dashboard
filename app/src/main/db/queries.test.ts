@@ -531,16 +531,20 @@ describe('quota snapshot detail persistence', () => {
     const observed = getBurn(db, 'codex', 7).filter((point) => !point.projected)
     expect(observed.at(-1)?.used_pct).toBe(4)
     expect(getProjections(db).filter((card) => card.provider === 'codex')).toMatchObject([
-      { id: 'codex:primary', window_kind: 'session', window_label: 'Session' },
+      {
+        id: 'codex:primary',
+        window_kind: 'session',
+        window_label: 'Session',
+        daily_burn_pct: null,
+        days_to_empty: null
+      },
       { id: 'codex:secondary', window_kind: 'weekly', window_label: 'Weekly' }
     ])
     const codexSeries = getBurnSeries(db, 'codex', 7)
-    expect(codexSeries).toHaveLength(2)
     expect(codexSeries).toMatchObject([
-      { provider: 'codex', label: 'Codex · Session', window_kind: 'session' },
-      { provider: 'codex', label: 'Codex · Weekly', window_kind: 'weekly' }
+      { provider: 'codex', label: 'Codex CLI', window_kind: 'weekly' }
     ])
-    expect(codexSeries[1].points[0]).toMatchObject({ used_pct: 4, projected: false })
+    expect(codexSeries[0].points[0]).toMatchObject({ used_pct: 4, projected: false })
     raw.close()
   })
 

@@ -1229,6 +1229,7 @@ export function getBurnSeries(
 
     for (const row of rows) {
       for (const window of forecastWindowsFromStored(row.raw_summary_json, row)) {
+        if (window.kind !== 'weekly' && window.kind !== 'monthly') continue
         const key = `${window.kind}:${window.id}`
         const group = grouped.get(key) ?? {
           id: window.id,

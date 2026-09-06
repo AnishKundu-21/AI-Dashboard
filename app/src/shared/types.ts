@@ -521,6 +521,7 @@ export const ProjectionCardSchema = z.object({
   provider: ProviderIdSchema,
   window_kind: z.enum(['session', 'weekly', 'monthly', 'other']),
   window_label: z.string(),
+  resets_at: z.string().nullable(),
   forecast_confidence: ForecastConfidenceSchema,
   headline: z.string(),
   detail: z.string(),

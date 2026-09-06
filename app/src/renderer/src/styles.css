@@ -878,6 +878,13 @@ table,
   font-weight: 550;
 }
 
+.projection-reset {
+  display: block;
+  margin-top: 7px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
 .model-filter-bar .segmented {
   width: max-content;
 }

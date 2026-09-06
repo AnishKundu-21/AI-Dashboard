@@ -1,6 +1,6 @@
 import type { ProjectionCard as ProjectionCardData, QuotaSnapshot } from '@shared/types'
 import { providerMeta } from '@shared/providers'
-import { confidenceBadge } from '../lib/format'
+import { confidenceBadge, relativeTime } from '../lib/format'
 import { IconSpark } from './Icons'
 
 interface Props {
@@ -31,6 +31,7 @@ export function ProjectionCard({ projection: p, quota }: Props) {
       <div className="projection-body">
         <div className="headline">{p.headline}</div>
         <p className="detail">{p.detail}</p>
+        {p.resets_at ? <span className="projection-reset">Resets {relativeTime(p.resets_at)}</span> : null}
       </div>
 
       {hasStats ? (
@@ -47,7 +48,9 @@ export function ProjectionCard({ projection: p, quota }: Props) {
       ) : null}
 
       <div className="projection-confidence">
-        Forecast confidence: <strong>{p.forecast_confidence}</strong>
+        {p.window_kind === 'session'
+          ? 'Session snapshot — no pace forecast'
+          : <>Forecast confidence: <strong>{p.forecast_confidence}</strong></>}
       </div>
 
       {p.recommendation ? (
