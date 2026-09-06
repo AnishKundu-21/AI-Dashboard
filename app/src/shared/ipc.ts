@@ -8,7 +8,6 @@ import {
   BurnSeriesSchema,
   CollectorHealthSchema,
   DailyUsagePointSchema,
-  DashboardFilterSchema,
   ExportFormatSchema,
   ModelMixItemSchema,
   OverviewMetricsSchema,
@@ -41,22 +40,36 @@ export const IPC = {
   onChanged: 'events:changed'
 } as const
 
-export const GetOverviewInput = DashboardFilterSchema.pick({
-  provider: true,
-  range_days: true
-})
-export type GetOverviewInput = z.infer<typeof GetOverviewInput>
-
-/** A resolved current/previous-period analytics snapshot. */
-export const GetAnalyticsSnapshotInput = z
+const ProviderPeriodInputSchema = z
   .object({
     provider: z.union([ProviderIdSchema, z.literal('all')]).default('all')
   })
   .and(AnalyticsPeriodInputSchema)
-export type GetAnalyticsSnapshotInput = z.infer<typeof GetAnalyticsSnapshotInput>
 
-export const GetSessionsInput = DashboardFilterSchema
-export type GetSessionsInput = z.infer<typeof GetSessionsInput>
+export const GetOverviewInput = ProviderPeriodInputSchema
+export type GetOverviewInput = z.input<typeof GetOverviewInput>
+
+/** A resolved current/previous-period analytics snapshot. */
+export const GetAnalyticsSnapshotInput = ProviderPeriodInputSchema
+export type GetAnalyticsSnapshotInput = z.input<typeof GetAnalyticsSnapshotInput>
+
+const SessionPeriodInputSchema = z
+  .object({
+    provider: z.union([ProviderIdSchema, z.literal('all')]).default('all'),
+    search: z.string().optional(),
+    model: z.string().optional(),
+    day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    sort_by: z
+      .enum(['started_at', 'tokens_total', 'api_equiv_usd', 'duration_ms'])
+      .default('started_at'),
+    sort_dir: z.enum(['asc', 'desc']).default('desc'),
+    limit: z.number().int().min(1).max(500).default(100),
+    offset: z.number().int().min(0).default(0)
+  })
+  .and(AnalyticsPeriodInputSchema)
+
+export const GetSessionsInput = SessionPeriodInputSchema
+export type GetSessionsInput = z.input<typeof GetSessionsInput>
 
 export const GetBurnInput = z.object({
   provider: ProviderIdSchema,
@@ -72,9 +85,9 @@ export type GetBurnSeriesInput = z.infer<typeof GetBurnSeriesInput>
 
 export const ExportInput = z.object({
   format: ExportFormatSchema,
-  filter: DashboardFilterSchema
+  filter: SessionPeriodInputSchema
 })
-export type ExportInput = z.infer<typeof ExportInput>
+export type ExportInput = z.input<typeof ExportInput>
 
 export const SettingsSetInput = AppSettingsSchema.partial()
 export type SettingsSetInput = z.infer<typeof SettingsSetInput>

@@ -7,7 +7,6 @@ import {
 } from '../../shared/providers'
 import type {
   AlertRow,
-  AnalyticsPeriodInput,
   AnalyticsSnapshot,
   AnalyticsTotals,
   AnalyticsWindow,
@@ -30,15 +29,29 @@ import { buildProjectionCard } from '../analytics/projections'
 import { pricingInfo } from '../pricing/store'
 import { fxInfo } from '../pricing/fx'
 import {
+  addCalendarDays,
   makeDayFormatter,
   rangeStartMs,
   resolveAnalyticsPeriod,
   resolveTimeZone,
+  startOfDayMs,
+  type AnalyticsPeriodSelection,
   type ResolvedAnalyticsWindow
 } from '../util/time'
 import { normalizeModelName } from '../collectors/models'
 
 type ProviderFilter = ProviderId | 'all'
+type PeriodSelection = RangeDays | AnalyticsPeriodSelection
+
+function resolveSelectedPeriod(
+  timezone: string,
+  selection: PeriodSelection
+) {
+  return resolveAnalyticsPeriod(
+    typeof selection === 'number' ? { range_days: selection } : selection,
+    timezone
+  )
+}
 
 function providerClause(
   provider: ProviderFilter,
@@ -306,13 +319,19 @@ export function getLatestQuotas(db: Database.Database): QuotaSnapshot[] {
 export function getOverview(
   db: Database.Database,
   provider: ProviderFilter,
-  rangeDays: RangeDays
+  selection: PeriodSelection
 ): OverviewMetrics {
   const settings = getSettings(db)
   const timezone = settings.timezone
   const enabled = enabledProviderIds(settings)
-  const sinceMs = rangeStartMs(rangeDays, timezone)
-  const row = getAnalyticsTotalsInRange(db, provider, enabled, sinceMs, null)
+  const period = resolveSelectedPeriod(timezone, selection)
+  const row = getAnalyticsTotalsInRange(
+    db,
+    provider,
+    enabled,
+    period.current.startMs,
+    period.current.endMs
+  )
 
   const byProviderRows = db
     .prepare(
@@ -332,13 +351,14 @@ export function getOverview(
       COUNT(CASE WHEN cost_usd IS NULL THEN 1 END) AS unpriced_calls,
       COUNT(DISTINCT session_id) AS session_count
     FROM usage_events
-    WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
+    WHERE (@startMs IS NULL OR ts_ms >= @startMs)
+      AND (@endMs IS NULL OR ts_ms < @endMs)
       AND ${providerClause(provider, enabled)}
     GROUP BY provider
     ORDER BY tokens_total DESC
   `
     )
-    .all({ sinceMs, provider }) as ProviderCost[]
+    .all({ startMs: period.current.startMs, endMs: period.current.endMs, provider }) as ProviderCost[]
 
   const quotas = getLatestQuotas(db)
     .filter((q) => provider === 'all' || q.provider === provider)
@@ -352,18 +372,21 @@ export function getOverview(
       : null
 
   const averageDays =
-    rangeDays === 0
+    period.current.days == null
       ? inclusiveDaysSince(
           row.min_ts_ms == null ? null : new Date(row.min_ts_ms).toISOString().slice(0, 10)
         )
-      : rangeDays
+      : period.current.days
 
   return {
     tokens_total: row.tokens_total,
     api_equiv_usd: row.api_equiv_usd,
     session_count: row.session_count,
     avg_used_pct,
-    range_days: rangeDays,
+    range_days:
+      typeof selection === 'number'
+        ? (selection as RangeDays)
+        : (selection.range_days as RangeDays | undefined) ?? null,
     avg_daily_tokens: row.tokens_total / averageDays,
     token_breakdown: row.token_breakdown,
     by_provider: byProviderRows,
@@ -381,7 +404,7 @@ export function getOverview(
  */
 export function getAnalyticsSnapshot(
   db: Database.Database,
-  input: AnalyticsPeriodInput & { provider: ProviderFilter },
+  input: AnalyticsPeriodSelection & { provider: ProviderFilter },
   nowMs: number = Date.now()
 ): AnalyticsSnapshot {
   const settings = getSettings(db)
@@ -436,12 +459,12 @@ export function getAnalyticsSnapshot(
 export function getDailyUsage(
   db: Database.Database,
   provider: ProviderFilter,
-  rangeDays: RangeDays
+  selection: PeriodSelection
 ): DailyUsagePoint[] {
   const settings = getSettings(db)
   const timezone = settings.timezone
   const enabled = enabledProviderIds(settings)
-  const sinceMs = rangeStartMs(rangeDays, timezone)
+  const period = resolveSelectedPeriod(timezone, selection)
   const dayOf = makeDayFormatter(timezone)
 
   const rows = db
@@ -455,11 +478,12 @@ export function getDailyUsage(
            COALESCE(cache_savings_usd, 0) AS cache_savings_usd,
            CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END AS unpriced_calls
     FROM usage_events
-    WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
+    WHERE (@startMs IS NULL OR ts_ms >= @startMs)
+      AND (@endMs IS NULL OR ts_ms < @endMs)
       AND ${providerClause(provider, enabled)}
   `
     )
-    .all({ sinceMs, provider }) as Array<{
+    .all({ startMs: period.current.startMs, endMs: period.current.endMs, provider }) as Array<{
       provider: ProviderId
       ts_ms: number
       session_id: string
@@ -530,7 +554,7 @@ export function getDailyUsage(
 export function getSessions(
   db: Database.Database,
   provider: ProviderFilter,
-  rangeDays: RangeDays,
+  selection: PeriodSelection,
   search?: string,
   options: {
     model?: string
@@ -543,35 +567,49 @@ export function getSessions(
 ): SessionRow[] {
   const settings = getSettings(db)
   const enabled = enabledProviderIds(settings)
-  const sinceIso = rangeStart(rangeDays, settings.timezone)?.toISOString() ?? null
+  const period = resolveSelectedPeriod(settings.timezone, selection)
+  const dayStartMs = options.day ? startOfDayMs(options.day, settings.timezone) : null
+  const dayEndMs = options.day
+    ? startOfDayMs(addCalendarDays(options.day, 1), settings.timezone)
+    : null
 
   let sql = `
-    SELECT id, provider, project, model, tokens_in, tokens_out, tokens_total,
+    SELECT s.id, s.provider, s.project, s.model, s.tokens_in, s.tokens_out, s.tokens_total,
            tokens_cached, tokens_reasoning, model_calls, api_equiv_usd,
            provider_cost_usd, api_duration_ms, cache_savings_usd,
            unpriced, duration_ms, status,
            started_at, ended_at, source
-    FROM sessions
-    WHERE (@sinceIso IS NULL OR (started_at IS NOT NULL AND started_at >= @sinceIso))
-      AND ${providerClause(provider, enabled)}
+    FROM sessions s
+    WHERE EXISTS (
+      SELECT 1
+      FROM usage_events e
+      WHERE e.provider = s.provider
+        AND e.session_id = s.id
+        AND (@startMs IS NULL OR e.ts_ms >= @startMs)
+        AND (@endMs IS NULL OR e.ts_ms < @endMs)
+        AND (@dayStartMs IS NULL OR e.ts_ms >= @dayStartMs)
+        AND (@dayEndMs IS NULL OR e.ts_ms < @dayEndMs)
+    )
+      AND ${providerClause(provider, enabled, 's.provider')}
   `
-  const params: Record<string, unknown> = { sinceIso, provider }
+  const params: Record<string, unknown> = {
+    startMs: period.current.startMs,
+    endMs: period.current.endMs,
+    dayStartMs,
+    dayEndMs,
+    provider
+  }
 
   if (search && search.trim()) {
-    sql += ` AND (project LIKE @q OR model LIKE @q)`
+    sql += ` AND (s.project LIKE @q OR s.model LIKE @q)`
     params.q = `%${search.trim()}%`
   }
 
-  if (options.day) {
-    sql += ` AND substr(started_at, 1, 10) = @day`
-    params.day = options.day
-  }
-
   const sortColumns = {
-    started_at: 'started_at',
-    tokens_total: 'tokens_total',
-    api_equiv_usd: 'api_equiv_usd',
-    duration_ms: 'duration_ms'
+    started_at: 's.started_at',
+    tokens_total: 's.tokens_total',
+    api_equiv_usd: 's.api_equiv_usd',
+    duration_ms: 's.duration_ms'
   } as const
   const sortBy = sortColumns[options.sortBy ?? 'started_at']
   const sortDir = options.sortDir === 'asc' ? 'ASC' : 'DESC'
@@ -660,11 +698,11 @@ export function recordCollectorHealth(
 export function getModelMix(
   db: Database.Database,
   provider: ProviderFilter,
-  rangeDays: RangeDays
+  selection: PeriodSelection
 ): ModelMixItem[] {
   const settings = getSettings(db)
   const enabled = enabledProviderIds(settings)
-  const sinceMs = rangeStartMs(rangeDays, settings.timezone)
+  const period = resolveSelectedPeriod(settings.timezone, selection)
 
   const rows = db
     .prepare(
@@ -682,14 +720,15 @@ export function getModelMix(
            COALESCE(SUM(cache_savings_usd), 0) AS cache_savings_usd,
            COUNT(CASE WHEN cost_usd IS NULL THEN 1 END) AS unpriced_calls
     FROM usage_events
-    WHERE (@sinceMs IS NULL OR ts_ms >= @sinceMs)
+    WHERE (@startMs IS NULL OR ts_ms >= @startMs)
+      AND (@endMs IS NULL OR ts_ms < @endMs)
       AND ${providerClause(provider, enabled)}
     GROUP BY model, provider, session_id
     HAVING tokens_total > 0
     ORDER BY tokens_total DESC
   `
     )
-    .all({ sinceMs, provider }) as Array<{
+    .all({ startMs: period.current.startMs, endMs: period.current.endMs, provider }) as Array<{
     model: string
     provider: ProviderId
     session_id: string
@@ -1051,26 +1090,31 @@ export function dismissAlert(db: Database.Database, id: string): void {
 export function exportAsJson(
   db: Database.Database,
   provider: ProviderFilter,
-  rangeDays: RangeDays
+  selection: PeriodSelection
 ): string {
   const settings = getSettings(db)
   const payload = {
     exported_at: new Date().toISOString(),
-    filter: { provider, range_days: rangeDays },
+    filter: {
+      provider,
+      ...(typeof selection === 'number' ? { range_days: selection } : selection)
+    },
     currency: settings.display_currency,
     locale: settings.locale,
     pricing: pricingInfo(),
     fx: fxInfo(),
-    overview: getOverview(db, provider, rangeDays),
-    quotas: getLatestQuotas(db).filter(
+    overview: getOverview(db, provider, selection),
+    // Quotas and runway are provider snapshots, not historical usage. Naming
+    // keeps a range export from implying they were measured in this window.
+    current_quota_snapshots: getLatestQuotas(db).filter(
       (q) => provider === 'all' || q.provider === provider
     ),
-    projections: getProjections(db).filter(
+    current_projections: getProjections(db).filter(
       (p) => provider === 'all' || p.provider === provider
     ),
-    model_mix: getModelMix(db, provider, rangeDays),
-    sessions: getSessions(db, provider, rangeDays),
-    daily: getDailyUsage(db, provider, rangeDays)
+    model_mix: getModelMix(db, provider, selection),
+    sessions: getSessions(db, provider, selection),
+    daily: getDailyUsage(db, provider, selection)
   }
   return JSON.stringify(payload, null, 2)
 }
@@ -1078,10 +1122,10 @@ export function exportAsJson(
 export function exportAsCsv(
   db: Database.Database,
   provider: ProviderFilter,
-  rangeDays: RangeDays
+  selection: PeriodSelection
 ): string {
-  const sessions = getSessions(db, provider, rangeDays)
-  const daily = getDailyUsage(db, provider, rangeDays)
+  const sessions = getSessions(db, provider, selection)
+  const daily = getDailyUsage(db, provider, selection)
   const escape = (v: unknown) => {
     const s = v == null ? '' : String(v)
     if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`

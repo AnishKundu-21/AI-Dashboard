@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   applyBurnWindow,
   applyClaudeBurnWindow,
+  exportAsJson,
   getAnalyticsSnapshot,
   getBurn,
   getBurnSeries,
@@ -18,7 +19,7 @@ import {
   setSettings
 } from './queries'
 import { insertQuotaSnapshot } from './upsert'
-import type { QuotaSnapshot } from '../../shared/types'
+import { AnalyticsPeriodInputSchema, type QuotaSnapshot } from '../../shared/types'
 import { MIGRATIONS } from './schema'
 
 const claudeLive: QuotaSnapshot = {
@@ -280,6 +281,32 @@ describe('analytics period comparison', () => {
     }
   })
 
+  it('drills into sessions using the usage timezone, not the UTC ISO date', () => {
+    const raw = new DatabaseSync(':memory:')
+    raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+    for (const migration of MIGRATIONS) raw.exec(migration.sql)
+    const db = raw as unknown as Database.Database
+    setSettings(db, { timezone: 'America/New_York' })
+    const eventAt = Date.parse('2026-03-01T02:30:00.000Z') // Feb 28 in New York.
+    raw.prepare(`
+      INSERT INTO usage_events (
+        dedupe_key, provider, session_id, project, model, ts_ms,
+        uncached_input, cached_input, cache_creation, output, reasoning,
+        cost_usd, cache_savings_usd, reported_cost_usd, source
+      ) VALUES ('day-edge', 'claude', 'day-edge-session', 'project', 'claude-sonnet-4-5', ?, 10, 0, 0, 0, 0, 0, 0, NULL, 'test')
+    `).run(eventAt)
+    raw.prepare(`
+      INSERT INTO sessions (
+        id, provider, project, model, tokens_total, status, started_at, source, created_at
+      ) VALUES ('day-edge-session', 'claude', 'project', 'claude-sonnet-4-5', 10, 'complete', ?, 'test', ?)
+    `).run(new Date(eventAt).toISOString(), new Date(eventAt).toISOString())
+
+    expect(getSessions(db, 'claude', 0, undefined, { day: '2026-02-28' })).toMatchObject([
+      { id: 'day-edge-session' }
+    ])
+    raw.close()
+  })
+
   it('compares an exact custom window with the immediately preceding equal-length window', () => {
     const raw = new DatabaseSync(':memory:')
     raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
@@ -291,7 +318,7 @@ describe('analytics period comparison', () => {
         dedupe_key, provider, session_id, project, model, ts_ms,
         uncached_input, cached_input, cache_creation, output, reasoning,
         cost_usd, cache_savings_usd, reported_cost_usd, source
-      ) VALUES (?, 'claude', ?, 'project', 'test-model', ?, ?, 0, 0, 0, 0, ?, 0, NULL, 'test')
+      ) VALUES (?, 'claude', ?, 'project', 'claude-sonnet-4-5', ?, ?, 0, 0, 0, 0, ?, 0, NULL, 'test')
     `)
 
     // Sep 2–4 is the selected window; Aug 30–Sep 1 is the exact prior window.
@@ -301,14 +328,13 @@ describe('analytics period comparison', () => {
     // The exclusive boundary must keep this future event out of both windows.
     insert.run('outside', 'outside-session', Date.parse('2026-09-05T00:00:00.000Z'), 500, 5)
 
+    const selection = AnalyticsPeriodInputSchema.parse({
+      start_day: '2026-09-02',
+      end_day: '2026-09-04'
+    })
     const snapshot = getAnalyticsSnapshot(
       db,
-      {
-        provider: 'claude',
-        range_days: 7,
-        start_day: '2026-09-02',
-        end_day: '2026-09-04'
-      },
+      { provider: 'claude', ...selection },
       Date.parse('2026-09-06T10:00:00.000Z')
     )
 
@@ -334,6 +360,38 @@ describe('analytics period comparison', () => {
         token_breakdown: { model_calls: 1 }
       }
     })
+
+    raw.prepare(`
+      INSERT INTO sessions (
+        id, provider, project, model, tokens_total, status, started_at, source, created_at
+      ) VALUES ('current-session', 'claude', 'project', 'claude-sonnet-4-5', 200, 'complete', ?, 'test', ?)
+    `).run('2026-09-01T12:00:00.000Z', '2026-09-01T12:00:00.000Z')
+    // This session began before the custom period, but its two usage events
+    // fall inside it, so an event-grain analytics filter must retain it.
+    raw.prepare(`
+      INSERT INTO sessions (
+        id, provider, project, model, tokens_total, status, started_at, source, created_at
+      ) VALUES ('outside-session', 'claude', 'project', 'claude-sonnet-4-5', 500, 'complete', ?, 'test', ?)
+    `).run('2026-09-05T00:00:00.000Z', '2026-09-05T00:00:00.000Z')
+
+    const customOverview = getOverview(db, 'claude', selection)
+    expect(customOverview.tokens_total).toBe(200)
+    expect(customOverview.range_days).toBeNull()
+    expect(getDailyUsage(db, 'claude', selection).map((point) => point.tokens_total)).toEqual([100, 100])
+    expect(getModelMix(db, 'claude', selection)).toMatchObject([
+      { model: 'claude-sonnet-4-5', tokens_total: 200 }
+    ])
+    expect(getSessions(db, 'claude', selection).map((session) => session.id)).toEqual([
+      'current-session'
+    ])
+    const customExport = JSON.parse(exportAsJson(db, 'claude', selection))
+    expect(customExport.filter).toMatchObject({
+      provider: 'claude',
+      start_day: '2026-09-02',
+      end_day: '2026-09-04'
+    })
+    expect(customExport.filter).not.toHaveProperty('range_days')
+    expect(customExport.overview.range_days).toBeNull()
     raw.close()
   })
 

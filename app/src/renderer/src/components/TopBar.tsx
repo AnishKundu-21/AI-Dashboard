@@ -31,6 +31,8 @@ interface Props {
   onProvider: (p: ProviderTab) => void
   rangeDays: RangeDays
   onRange: (d: RangeDays) => void
+  customDateRange?: { start_day: string; end_day: string }
+  onCustomDateRange?: (range: { start_day: string; end_day: string }) => void
   refreshing: boolean
   onRefresh: () => void
   onExport: (format: 'csv' | 'json') => void
@@ -45,6 +47,8 @@ export function TopBar({
   onProvider,
   rangeDays,
   onRange,
+  customDateRange,
+  onCustomDateRange,
   refreshing,
   onRefresh,
   onExport,
@@ -52,7 +56,31 @@ export function TopBar({
   onTheme
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [customOpen, setCustomOpen] = useState(false)
+  const [customStart, setCustomStart] = useState(customDateRange?.start_day ?? '')
+  const [customEnd, setCustomEnd] = useState(customDateRange?.end_day ?? '')
   const menuRef = useRef<HTMLDivElement>(null)
+  const customPopoverRef = useRef<HTMLDivElement>(null)
+  const rangeSelectRef = useRef<HTMLSelectElement>(null)
+  const editDatesRef = useRef<HTMLButtonElement>(null)
+  const customStartRef = useRef<HTMLInputElement>(null)
+
+  const closeCustom = () => {
+    setCustomOpen(false)
+    window.setTimeout(() => {
+      const focusTarget = editDatesRef.current ?? rangeSelectRef.current
+      focusTarget?.focus()
+    }, 0)
+  }
+
+  useEffect(() => {
+    setCustomStart(customDateRange?.start_day ?? '')
+    setCustomEnd(customDateRange?.end_day ?? '')
+  }, [customDateRange?.start_day, customDateRange?.end_day])
+
+  useEffect(() => {
+    if (!onCustomDateRange) setCustomOpen(false)
+  }, [onCustomDateRange])
 
   useEffect(() => {
     if (!menuOpen) return
@@ -69,6 +97,30 @@ export function TopBar({
       document.removeEventListener('keydown', onKey)
     }
   }, [menuOpen])
+
+  useEffect(() => {
+    if (!customOpen) return
+    customStartRef.current?.focus()
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Node
+      if (
+        !customPopoverRef.current?.contains(target) &&
+        !rangeSelectRef.current?.contains(target) &&
+        !editDatesRef.current?.contains(target)
+      ) {
+        closeCustom()
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCustom()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [customOpen])
 
   const options: SegmentedOption<ProviderTab>[] = [
     { value: 'all', label: 'All' },
@@ -92,17 +144,78 @@ export function TopBar({
         />
 
         <select
+          ref={rangeSelectRef}
           className="select"
-          value={rangeDays}
+          value={customDateRange ? 'custom' : rangeDays}
           aria-label="Date range"
-          onChange={(e) => onRange(Number(e.target.value) as RangeDays)}
+          onChange={(e) => {
+            if (e.target.value === 'custom') {
+              setCustomOpen(true)
+              return
+            }
+            setCustomOpen(false)
+            onRange(Number(e.target.value) as RangeDays)
+          }}
         >
           {RANGES.map((r) => (
             <option key={r.value} value={r.value}>
               {r.label}
             </option>
           ))}
+          {onCustomDateRange ? <option value="custom">Custom dates…</option> : null}
         </select>
+
+        {customDateRange && onCustomDateRange ? (
+          <button ref={editDatesRef} type="button" className="btn" onClick={() => setCustomOpen(true)}>
+            Edit dates
+          </button>
+        ) : null}
+
+        {customOpen && onCustomDateRange ? (
+          <div
+            ref={customPopoverRef}
+            className="custom-range-popover"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Custom date range"
+          >
+            <label>
+              From
+              <input
+                ref={customStartRef}
+                type="date"
+                value={customStart}
+                max={customEnd || undefined}
+                onChange={(e) => setCustomStart(e.target.value)}
+              />
+            </label>
+            <label>
+              To
+              <input
+                type="date"
+                value={customEnd}
+                min={customStart || undefined}
+                onChange={(e) => setCustomEnd(e.target.value)}
+              />
+            </label>
+            <div className="custom-range-actions">
+              <button type="button" className="btn ghost" onClick={closeCustom}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={!customStart || !customEnd || customStart > customEnd}
+                onClick={() => {
+                  onCustomDateRange({ start_day: customStart, end_day: customEnd })
+                  closeCustom()
+                }}
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         <div className="topbar-divider" />
 

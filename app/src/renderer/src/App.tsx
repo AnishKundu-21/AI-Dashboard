@@ -61,6 +61,9 @@ export default function App() {
   // Filters ---------------------------------------------------------------
   const [provider, setProvider] = useState<ProviderTab>('all')
   const [rangeDays, setRangeDays] = useState<RangeDays>(7)
+  const [customAnalyticsRange, setCustomAnalyticsRange] = useState<
+    { start_day: string; end_day: string } | undefined
+  >()
   const [search, setSearch] = useState('')
   const [searchDebounced, setSearchDebounced] = useState('')
   const [selectedDay, setSelectedDay] = useState<string | undefined>()
@@ -94,17 +97,24 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null)
   const now = useNow(20_000)
 
+  const activePeriod = useMemo(
+    () => (view === 'analytics' && customAnalyticsRange
+      ? customAnalyticsRange
+      : { range_days: rangeDays }),
+    [customAnalyticsRange, rangeDays, view]
+  )
+
   const filter = useMemo(
     () => ({
       provider,
-      range_days: rangeDays,
+      ...activePeriod,
       search: searchDebounced || undefined,
       sort_by: 'started_at' as const,
       sort_dir: 'desc' as const,
       limit: 500,
       offset: 0
     }),
-    [provider, rangeDays, searchDebounced]
+    [activePeriod, provider, searchDebounced]
   )
 
   useEffect(() => {
@@ -114,7 +124,7 @@ export default function App() {
 
   useEffect(() => {
     setSessionLimit(100)
-  }, [provider, rangeDays, searchDebounced, selectedDay, selectedModel, sessionSort])
+  }, [activePeriod, provider, searchDebounced, selectedDay, selectedModel, sessionSort])
 
   const pushToast = useCallback((message: string, tone: ToastItem['tone'] = 'ok') => {
     const id = ++toastId.current
@@ -130,7 +140,7 @@ export default function App() {
     }
     try {
       setError(null)
-      const base = { provider, range_days: rangeDays }
+      const base = { provider, ...activePeriod }
       const [ov, q, d, burnList, m, s, p, a, st, health] = await Promise.all([
         window.api.getOverview(base),
         window.api.getQuotas(),
@@ -179,7 +189,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [provider, rangeDays, searchDebounced, selectedDay, selectedModel, sessionSort, sessionLimit, view])
+  }, [activePeriod, provider, searchDebounced, selectedDay, selectedModel, sessionSort, sessionLimit, view])
 
   useEffect(() => {
     void load()
@@ -336,7 +346,10 @@ export default function App() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `ai-usage-${provider}-${rangeFileLabel(rangeDays)}.${format}`
+      const exportRange = 'start_day' in activePeriod
+        ? `${activePeriod.start_day}-to-${activePeriod.end_day}`
+        : rangeFileLabel(activePeriod.range_days)
+      a.download = `ai-usage-${provider}-${exportRange}.${format}`
       a.click()
       URL.revokeObjectURL(url)
       pushToast(`Exported ${format.toUpperCase()}`)
@@ -1023,7 +1036,12 @@ export default function App() {
             providers={enabledProviders}
             onProvider={setProvider}
             rangeDays={rangeDays}
-            onRange={setRangeDays}
+            onRange={(days) => {
+              setCustomAnalyticsRange(undefined)
+              setRangeDays(days)
+            }}
+            customDateRange={view === 'analytics' ? customAnalyticsRange : undefined}
+            onCustomDateRange={view === 'analytics' ? setCustomAnalyticsRange : undefined}
             refreshing={refreshing}
             onRefresh={() => void onRefresh()}
             onExport={(f) => void onExport(f)}

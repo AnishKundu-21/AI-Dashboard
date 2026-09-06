@@ -72,8 +72,16 @@ export const AnalyticsPeriodInputSchema = AnalyticsPeriodFieldsSchema.superRefin
       })
     }
   }
-).transform((value) => ({ ...value, range_days: value.range_days ?? 7 }))
-export type AnalyticsPeriodInput = z.infer<typeof AnalyticsPeriodInputSchema>
+).transform((value) => {
+  if (value.start_day && value.end_day) {
+    return { start_day: value.start_day, end_day: value.end_day }
+  }
+  return { range_days: value.range_days ?? 7 }
+})
+/** Raw renderer/IPC input. A custom range has no preset range-days field. */
+export type AnalyticsPeriodInput = z.input<typeof AnalyticsPeriodInputSchema>
+/** Validated main-process input. It is either a preset or a custom range. */
+export type ResolvedAnalyticsPeriodInput = z.output<typeof AnalyticsPeriodInputSchema>
 
 export const ConfidenceSchema = z.enum(['live', 'estimate', 'unknown'])
 export type Confidence = z.infer<typeof ConfidenceSchema>
@@ -329,7 +337,8 @@ export const OverviewMetricsSchema = z.object({
   api_equiv_usd: z.number(),
   session_count: z.number(),
   avg_used_pct: z.number().nullable(),
-  range_days: RangeDaysSchema,
+  /** Null for an explicit custom range; see the analytics window for its dates. */
+  range_days: RangeDaysSchema.nullable(),
   avg_daily_tokens: z.number(),
   token_breakdown: z.object({
     uncached_input: z.number(),

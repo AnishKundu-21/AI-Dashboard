@@ -128,7 +128,7 @@ describe('resolveAnalyticsPeriod', () => {
 
   it('keeps custom ranges inclusive across a daylight-saving transition', () => {
     const period = resolveAnalyticsPeriod(
-      { range_days: 7, start_day: '2026-03-07', end_day: '2026-03-09' },
+      { start_day: '2026-03-07', end_day: '2026-03-09' },
       'America/New_York'
     )
     expect(period.current).toMatchObject({

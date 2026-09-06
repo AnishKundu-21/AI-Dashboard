@@ -9,11 +9,9 @@
 
 const DAY_MS = 86_400_000
 
-export type AnalyticsPeriodSelection = {
-  range_days: number
-  start_day?: string
-  end_day?: string
-}
+export type AnalyticsPeriodSelection =
+  | { range_days: number; start_day?: never; end_day?: never }
+  | { start_day: string; end_day: string; range_days?: never }
 
 export type ResolvedAnalyticsWindow = {
   startDay: string | null
@@ -186,7 +184,8 @@ export function resolveAnalyticsPeriod(
     }
   }
 
-  if (selection.range_days === 0) {
+  const rangeDays = selection.range_days ?? 7
+  if (rangeDays === 0) {
     return {
       current: { startDay: null, endDay: null, startMs: null, endMs: null, days: null },
       previous: null
@@ -194,9 +193,9 @@ export function resolveAnalyticsPeriod(
   }
 
   const endDay = dayInZone(nowMs, zone)
-  const startDay = addCalendarDays(endDay, -(selection.range_days - 1))
+  const startDay = addCalendarDays(endDay, -(rangeDays - 1))
   const startMs = startOfDayMs(startDay, zone)
-  const days = selection.range_days
+  const days = rangeDays
   const previousStartDay = addCalendarDays(startDay, -days)
   return {
     current: {

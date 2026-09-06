@@ -497,6 +497,7 @@ table,
 }
 
 .topbar-actions {
+  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -671,6 +672,48 @@ table,
 
 .head-tools .search .input {
   width: 100%;
+}
+
+.custom-range-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 7px);
+  right: 88px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  min-width: 310px;
+  padding: 12px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.3);
+}
+
+.custom-range-popover label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-3);
+  font-size: 10.5px;
+}
+
+.custom-range-popover input {
+  min-width: 0;
+  height: 30px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-1);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.custom-range-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
 }
 
 .card-head-actions {
@@ -2998,6 +3041,10 @@ td.dim {
   .topbar-actions {
     margin-left: 0;
     width: 100%;
+  }
+  .custom-range-popover {
+    right: 0;
+    width: min(310px, calc(100vw - 28px));
   }
   .search .input {
     width: 100%;

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { AnalyticsPeriodInputSchema, AppSettingsSchema, DashboardFilterSchema } from './types'
-import { GetAnalyticsSnapshotInput, GetBurnSeriesInput } from './ipc'
+import {
+  ExportInput,
+  GetAnalyticsSnapshotInput,
+  GetBurnSeriesInput,
+  GetSessionsInput
+} from './ipc'
 
 describe('dashboard date ranges', () => {
   it.each([0, 1, 3, 5, 7, 30, 180, 365])(
@@ -49,9 +54,24 @@ describe('analytics period input', () => {
       })
     ).toMatchObject({
       provider: 'claude',
-      range_days: 7,
       start_day: '2026-09-02',
       end_day: '2026-09-04'
+    })
+    expect(
+      GetAnalyticsSnapshotInput.parse({
+        provider: 'claude',
+        start_day: '2026-09-02',
+        end_day: '2026-09-04'
+      })
+    ).not.toHaveProperty('range_days')
+  })
+
+  it('carries custom dates through session and export requests', () => {
+    const custom = { start_day: '2026-09-02', end_day: '2026-09-04' }
+    expect(GetSessionsInput.parse(custom)).toMatchObject(custom)
+    expect(ExportInput.parse({ format: 'json', filter: custom })).toMatchObject({
+      format: 'json',
+      filter: custom
     })
   })
 

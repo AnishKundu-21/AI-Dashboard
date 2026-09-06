@@ -47,14 +47,14 @@ import { applyRetention } from '../db/retention'
 export function registerIpcHandlers(): void {
   secureHandle(IPC.getOverview, (_e, raw) => {
     const input = GetOverviewInput.parse(raw ?? {})
-    return getOverview(getDb(), input.provider, input.range_days)
+    return getOverview(getDb(), input.provider, input)
   })
 
   secureHandle(IPC.getQuotas, () => getLatestQuotas(getDb()))
 
   secureHandle(IPC.getDailyUsage, (_e, raw) => {
     const input = GetOverviewInput.parse(raw ?? {})
-    return getDailyUsage(getDb(), input.provider, input.range_days)
+    return getDailyUsage(getDb(), input.provider, input)
   })
 
   secureHandle(IPC.getBurn, (_e, raw) => {
@@ -74,12 +74,12 @@ export function registerIpcHandlers(): void {
 
   secureHandle(IPC.getModelMix, (_e, raw) => {
     const input = GetOverviewInput.parse(raw ?? {})
-    return getModelMix(getDb(), input.provider, input.range_days)
+    return getModelMix(getDb(), input.provider, input)
   })
 
   secureHandle(IPC.getSessions, (_e, raw) => {
     const input = GetSessionsInput.parse(raw ?? {})
-    return getSessions(getDb(), input.provider, input.range_days, input.search, {
+    return getSessions(getDb(), input.provider, input, input.search, {
       model: input.model,
       day: input.day,
       sortBy: input.sort_by,
@@ -106,12 +106,13 @@ export function registerIpcHandlers(): void {
     const input = ExportInput.parse(raw)
     const content =
       input.format === 'csv'
-        ? exportAsCsv(getDb(), input.filter.provider, input.filter.range_days)
-        : exportAsJson(getDb(), input.filter.provider, input.filter.range_days)
+        ? exportAsCsv(getDb(), input.filter.provider, input.filter)
+        : exportAsJson(getDb(), input.filter.provider, input.filter)
 
     const win = BrowserWindow.fromWebContents(e.sender)
-    const rangeLabel =
-      input.filter.range_days === 0 ? 'lifetime' : `${input.filter.range_days}d`
+    const rangeLabel = input.filter.start_day && input.filter.end_day
+      ? `${input.filter.start_day}-to-${input.filter.end_day}`
+      : input.filter.range_days === 0 ? 'lifetime' : `${input.filter.range_days}d`
     const defaultName = `ai-usage-${input.filter.provider}-${rangeLabel}.${input.format}`
     const dialogOpts = {
       title: 'Export usage data',
