@@ -857,6 +857,27 @@ table,
   scrollbar-width: thin;
 }
 
+.projection-badges {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.projection-confidence {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.projection-confidence strong {
+  color: var(--text-2);
+  font-weight: 550;
+}
+
 .model-filter-bar .segmented {
   width: max-content;
 }

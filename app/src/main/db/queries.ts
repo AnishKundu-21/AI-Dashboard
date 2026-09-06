@@ -23,11 +23,12 @@ import type {
   QuotaSnapshot,
   RangeDays,
   SessionRow,
+  UsageWindow,
   UsageResolution
 } from '../../shared/types'
 import { AppSettingsSchema, MAX_CUSTOM_ANALYTICS_DAYS } from '../../shared/types'
 import { buildBurnSeries } from '../analytics/burn'
-import { buildProjectionCard } from '../analytics/projections'
+import { buildProjectionCard, forecastWindows } from '../analytics/projections'
 import { pricingInfo } from '../pricing/store'
 import { fxInfo } from '../pricing/fx'
 import {
@@ -1101,11 +1102,19 @@ export function getBurn(
   return buildBurnSeries(latest, history, effectiveDays)
 }
 
-type StoredBurnWindow = BurnWindow & { id: string }
+type StoredBurnWindow = BurnWindow & {
+  id: string
+  kind: UsageWindow['kind']
+  window_duration_mins: number | null
+}
 
-function weeklyWindowsFromStored(
+function forecastWindowsFromStored(
   raw: string | null,
-  fallback: { used_pct: number; reset_at: string | null; window_label: string | null }
+  fallback: {
+    used_pct: number
+    reset_at: string | null
+    window_label: string | null
+  }
 ): StoredBurnWindow[] {
   if (raw) {
     try {
@@ -1114,21 +1123,25 @@ function weeklyWindowsFromStored(
         windows?: QuotaSnapshot['windows']
       }
       const normalized = (parsed.quota_windows ?? [])
-        .filter((window) => window.kind === 'weekly' && window.used_pct != null)
+        .filter((window) => window.used_pct != null)
         .map((window) => ({
           id: window.id,
+          kind: window.kind,
           label: window.label,
           used_pct: window.used_pct,
           remaining_pct: 100 - (window.used_pct ?? 0),
-          reset_at: window.resets_at
+          reset_at: window.resets_at,
+          window_duration_mins: window.window_duration_mins
         }))
       if (normalized.length > 0) return normalized
 
       const legacy = (parsed.windows ?? [])
-        .filter((window) => /week/i.test(window.label) && window.used_pct != null)
+        .filter((window) => window.used_pct != null)
         .map((window) => ({
           id: window.label.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-          ...window
+          kind: forecastWindowKind(window.label),
+          ...window,
+          window_duration_mins: null
         }))
       if (legacy.length > 0) return legacy
     } catch {
@@ -1136,31 +1149,42 @@ function weeklyWindowsFromStored(
     }
   }
 
-  if (fallback.window_label && /week/i.test(fallback.window_label)) {
+  if (fallback.window_label) {
     return [{
-      id: 'weekly',
+      id: 'primary',
+      kind: forecastWindowKind(fallback.window_label),
       label: fallback.window_label,
       used_pct: fallback.used_pct,
       remaining_pct: 100 - fallback.used_pct,
-      reset_at: fallback.reset_at
+      reset_at: fallback.reset_at,
+      window_duration_mins: null
     }]
   }
   return []
 }
 
-function burnSeriesLabel(provider: ProviderId, windowLabel: string): string {
+function burnSeriesLabel(provider: ProviderId, windowLabel: string, hasMultipleWindows: boolean): string {
   const scope = windowLabel.match(/\(([^)]+)\)/)?.[1]
   if (scope) {
     const displayScope = scope.toLowerCase() === 'all models' ? 'All models' : scope
     return `${providerMeta(provider).short} · ${displayScope}`
   }
-  return providerMeta(provider).name
+  return hasMultipleWindows
+    ? `${providerMeta(provider).short} · ${windowLabel}`
+    : providerMeta(provider).name
+}
+
+function forecastWindowKind(label: string): UsageWindow['kind'] {
+  const normalized = label.toLowerCase()
+  if (normalized.includes('session') || normalized.includes('hour')) return 'session'
+  if (normalized.includes('week') || normalized.includes('seven day')) return 'weekly'
+  if (normalized.includes('month')) return 'monthly'
+  return 'other'
 }
 
 /**
- * Every aggregate weekly quota stream retained by the providers. Claude can
- * expose all-model, Opus, and Sonnet windows; Codex and Grok normally expose
- * one provider-wide weekly stream.
+ * Every retained quota window is its own series. Session, weekly, monthly,
+ * and provider-specific model allowances are never merged into one forecast.
  */
 export function getBurnSeries(
   db: Database.Database,
@@ -1192,7 +1216,9 @@ export function getBurnSeries(
 
     const grouped = new Map<string, {
       id: string
+      kind: UsageWindow['kind']
       label: string
+      window_duration_mins: number | null
       samples: Array<{
         day: string
         captured_at: string
@@ -1202,9 +1228,15 @@ export function getBurnSeries(
     }>()
 
     for (const row of rows) {
-      for (const window of weeklyWindowsFromStored(row.raw_summary_json, row)) {
-        const key = window.label.toLowerCase()
-        const group = grouped.get(key) ?? { id: window.id, label: window.label, samples: [] }
+      for (const window of forecastWindowsFromStored(row.raw_summary_json, row)) {
+        const key = `${window.kind}:${window.id}`
+        const group = grouped.get(key) ?? {
+          id: window.id,
+          kind: window.kind,
+          label: window.label,
+          window_duration_mins: window.window_duration_mins,
+          samples: []
+        }
         group.samples.push({
           day: row.captured_at.slice(0, 10),
           captured_at: row.captured_at,
@@ -1215,6 +1247,7 @@ export function getBurnSeries(
       }
     }
 
+    const hasMultipleWindows = grouped.size > 1
     for (const group of grouped.values()) {
       const latest = group.samples.at(-1)
       if (!latest) continue
@@ -1240,8 +1273,15 @@ export function getBurnSeries(
       result.push({
         id: `${id}:${group.id}`,
         provider: id,
-        label: burnSeriesLabel(id, group.label),
-        points: buildBurnSeries(snapshot, group.samples, effectiveDays)
+        label: burnSeriesLabel(id, group.label, hasMultipleWindows),
+        window_kind: group.kind,
+        forecast_confidence: group.samples.length >= 3 ? 'high' : group.samples.length >= 2 ? 'medium' : 'low',
+        points: buildBurnSeries(
+          snapshot,
+          group.samples,
+          effectiveDays,
+          group.window_duration_mins
+        )
       })
     }
   }
@@ -1257,7 +1297,7 @@ export function getProjections(db: Database.Database): ProjectionCard[] {
   since.setDate(since.getDate() - 7)
   const sinceDay = since.toISOString().slice(0, 10)
 
-  return quotas.map((q) => {
+  return quotas.flatMap((q) => {
     const dailyRows = db
       .prepare(
         `
@@ -1272,7 +1312,7 @@ export function getProjections(db: Database.Database): ProjectionCard[] {
       tokens_total: number
     }>
 
-    return buildProjectionCard(q, dailyRows, 7)
+    return forecastWindows(q).map((window) => buildProjectionCard(q, dailyRows, 7, window))
   })
 }
 

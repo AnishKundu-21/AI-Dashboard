@@ -77,6 +77,9 @@ export function BurnChart({ series }: Props) {
           <i className="dash" />
           Dashed = 3-day forecast
         </span>
+        {visibleSeries.some((entry) => entry.points.some((point) => point.lower_used_pct != null)) ? (
+          <span className="legend-item legend-note">Shaded = observed confidence range</span>
+        ) : null}
       </div>
 
       <div className="chart-shell" ref={wrapRef}>
@@ -86,7 +89,7 @@ export function BurnChart({ series }: Props) {
           height={H}
           viewBox={`0 0 ${W} ${H}`}
           role="img"
-          aria-label="Weekly quota burn and projection by provider"
+          aria-label="Quota allowance burn and projection by provider"
           onPointerMove={onMove}
           onPointerLeave={onLeave}
         >
@@ -103,8 +106,21 @@ export function BurnChart({ series }: Props) {
 
           {geometries.map(({ entry, obsPts, projPts, obsLen }, index) => {
             const tone = seriesTone(entry.provider, index, visibleSeries)
+            const rangePoints = entry.points
+              .filter((point) => point.projected && point.lower_used_pct != null && point.upper_used_pct != null)
+              .map((point) => ({
+                x: xFor(point.day),
+                low: yFor(point.lower_used_pct ?? point.used_pct),
+                high: yFor(point.upper_used_pct ?? point.used_pct)
+              }))
+            const confidenceBand = rangePoints.length > 1
+              ? `${rangePoints.map((point) => `${point.x},${point.high}`).join(' L')} L ${[...rangePoints]
+                .reverse()
+                .map((point) => `${point.x},${point.low}`)
+                .join(' L')} Z`
+              : undefined
             return (
-              <g key={entry.provider}>
+              <g key={entry.id}>
                 {obsPts.length > 1 ? (
                   <path className="chart-area" d={areaPath(obsPts, yFor(0))} fill={tone} opacity={visibleSeries.length === 1 ? 0.08 : 0.025} />
                 ) : null}
@@ -123,6 +139,7 @@ export function BurnChart({ series }: Props) {
                 {projPts.length > 1 ? (
                   <path d={smoothPath(projPts)} fill="none" stroke={tone} strokeWidth={1.65} strokeDasharray="4 4" opacity={0.78} />
                 ) : null}
+                {confidenceBand ? <path d={confidenceBand} fill={tone} opacity={0.1} pointerEvents="none" /> : null}
                 {activeDay ? entry.points.filter((point) => point.day === activeDay).map((point) => (
                   <circle
                     key={`${entry.provider}:${point.day}:${point.projected}`}
@@ -162,9 +179,9 @@ export function BurnChart({ series }: Props) {
               const point = entry.points.find((candidate) => candidate.day === activeDay)
               if (!point) return null
               return (
-                <div className="tt-row" key={entry.provider}>
+                <div className="tt-row" key={entry.id}>
                   <i style={{ background: seriesTone(entry.provider, index, visibleSeries) }} />
-                  {entry.label}{point.projected ? ' forecast' : ''}
+                  {entry.label}{point.projected ? ` forecast (${entry.forecast_confidence})` : ''}
                   <b>{point.used_pct.toFixed(1)}% used</b>
                 </div>
               )

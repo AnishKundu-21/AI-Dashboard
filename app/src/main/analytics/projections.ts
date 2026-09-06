@@ -1,9 +1,37 @@
 import { providerMeta, type ProviderId } from '../../shared/providers'
-import type { ProjectionCard, QuotaSnapshot } from '../../shared/types'
+import type {
+  ForecastConfidence,
+  ProjectionCard,
+  QuotaSnapshot,
+  UsageWindow
+} from '../../shared/types'
 
 export interface DailyTokens {
   day: string
   tokens_total: number
+}
+
+export type ForecastWindow = Pick<
+  UsageWindow,
+  'id' | 'kind' | 'label' | 'used_pct' | 'resets_at' | 'window_duration_mins'
+>
+
+/**
+ * A provider can expose several independent allowances. Keep them separate:
+ * a five-hour session limit and a seven-day allowance are not interchangeable.
+ */
+export function forecastWindows(q: QuotaSnapshot): ForecastWindow[] {
+  if (q.quota_windows && q.quota_windows.length > 0) return q.quota_windows
+
+  const label = q.window_label ?? 'Current window'
+  return [{
+    id: 'primary',
+    kind: kindFromLabel(label),
+    label,
+    used_pct: q.used_pct,
+    resets_at: q.reset_at,
+    window_duration_mins: null
+  }]
 }
 
 /**
@@ -12,11 +40,25 @@ export interface DailyTokens {
 export function buildProjectionCard(
   q: QuotaSnapshot,
   recentDaily: DailyTokens[],
-  lookbackDays: number
+  lookbackDays: number,
+  selectedWindow?: ForecastWindow
 ): ProjectionCard {
+  const window = selectedWindow ?? forecastWindows(q)[0]
+  const used = window?.used_pct ?? q.used_pct
+  const remaining = used == null ? null : Math.max(0, 100 - used)
+  const label = window?.label ?? q.window_label ?? 'Current window'
+  const confidence = forecastConfidence(q, window, used)
+  const base = {
+    id: `${q.provider}:${window?.id ?? 'primary'}`,
+    provider: q.provider,
+    window_kind: window?.kind ?? kindFromLabel(label),
+    window_label: label,
+    forecast_confidence: confidence
+  } as const
+
   if (!q.auth_connected) {
     return {
-      provider: q.provider,
+      ...base,
       headline: 'Not connected',
       detail: 'Install the CLI and log in, then refresh quotas.',
       level: 'info',
@@ -26,10 +68,10 @@ export function buildProjectionCard(
     }
   }
 
-  if (q.confidence !== 'live' || q.used_pct == null) {
+  if (q.confidence !== 'live' || used == null) {
     const tokenBurn = avgDailyTokens(recentDaily)
     return {
-      provider: q.provider,
+      ...base,
       headline: 'Estimate only',
       detail:
         tokenBurn > 0
@@ -43,19 +85,22 @@ export function buildProjectionCard(
     }
   }
 
-  const used = q.used_pct
-  const remaining = q.remaining_pct ?? Math.max(0, 100 - used)
-  const dailyBurnPct = estimateDailyBurnPct(q, lookbackDays)
+  const resolvedRemaining = remaining ?? Math.max(0, 100 - used)
+  const dailyBurnPct = estimateDailyBurnPct(
+    { ...q, used_pct: used, remaining_pct: resolvedRemaining, reset_at: window?.resets_at ?? q.reset_at, window_label: label },
+    lookbackDays,
+    window?.window_duration_mins
+  )
   const daysToEmpty =
     dailyBurnPct != null && dailyBurnPct > 0.05
-      ? +(remaining / dailyBurnPct).toFixed(1)
+      ? +(resolvedRemaining / dailyBurnPct).toFixed(1)
       : null
 
   if (used >= 90) {
     return {
-      provider: q.provider,
+      ...base,
       headline: 'Near exhaustion',
-      detail: `${Math.round(used)}% used · ${Math.round(remaining)}% left${daysToEmpty != null ? ` · ~${daysToEmpty}d at current pace` : ''}.`,
+      detail: `${Math.round(used)}% used · ${Math.round(resolvedRemaining)}% left${daysToEmpty != null ? ` · ~${daysToEmpty}d at current pace` : ''}.`,
       level: 'warn',
       days_to_empty: daysToEmpty,
       daily_burn_pct: dailyBurnPct,
@@ -65,7 +110,7 @@ export function buildProjectionCard(
 
   if (used >= 70 || (daysToEmpty != null && daysToEmpty <= 3)) {
     return {
-      provider: q.provider,
+      ...base,
       headline: daysToEmpty != null && daysToEmpty <= 3 ? 'May run out soon' : 'High burn',
       detail: `${Math.round(used)}% used${daysToEmpty != null ? ` · ~${daysToEmpty} days to empty at current pace` : ''}.`,
       level: 'warn',
@@ -78,11 +123,11 @@ export function buildProjectionCard(
     }
   }
 
-  if (dailyBurnPct != null && dailyBurnPct < 1 && remaining > 50) {
+  if (dailyBurnPct != null && dailyBurnPct < 1 && resolvedRemaining > 50) {
     return {
-      provider: q.provider,
+      ...base,
       headline: 'On track',
-      detail: `${Math.round(remaining)}% remaining · ${q.window_label ?? 'current window'}${dailyBurnPct != null ? ` · ~${dailyBurnPct.toFixed(1)}%/day` : ''}.`,
+      detail: `${Math.round(resolvedRemaining)}% remaining · ${label}${dailyBurnPct != null ? ` · ~${dailyBurnPct.toFixed(1)}%/day` : ''}.`,
       level: 'good',
       days_to_empty: daysToEmpty,
       daily_burn_pct: dailyBurnPct,
@@ -91,9 +136,9 @@ export function buildProjectionCard(
   }
 
   return {
-    provider: q.provider,
+    ...base,
     headline: 'On track',
-    detail: `${Math.round(remaining)}% remaining · ${q.window_label ?? 'current window'}${daysToEmpty != null ? ` · ~${daysToEmpty}d runway` : ''}.`,
+    detail: `${Math.round(resolvedRemaining)}% remaining · ${label}${daysToEmpty != null ? ` · ~${daysToEmpty}d runway` : ''}.`,
     level: 'good',
     days_to_empty: daysToEmpty,
     daily_burn_pct: dailyBurnPct,
@@ -107,15 +152,17 @@ export function buildProjectionCard(
 /** Prefer window-based burn; fall back to used/lookback. */
 export function estimateDailyBurnPct(
   q: QuotaSnapshot,
-  lookbackDays: number
+  lookbackDays: number,
+  windowDurationMins?: number | null
 ): number | null {
   if (q.used_pct == null) return null
 
   if (q.reset_at) {
     const reset = Date.parse(q.reset_at)
     if (!Number.isNaN(reset)) {
-      // Assume window length from window_label when possible
-      const windowDays = windowDaysGuess(q.window_label)
+      const windowDays = windowDurationMins != null && windowDurationMins > 0
+        ? windowDurationMins / (24 * 60)
+        : windowDaysGuess(q.window_label)
       if (windowDays > 0) {
         // used so far over elapsed portion of window
         const start = reset - windowDays * 86_400_000
@@ -127,6 +174,25 @@ export function estimateDailyBurnPct(
 
   const days = Math.max(lookbackDays, 1)
   return +(q.used_pct / days).toFixed(2)
+}
+
+function forecastConfidence(
+  q: QuotaSnapshot,
+  window: ForecastWindow | undefined,
+  used: number | null
+): ForecastConfidence {
+  if (!q.auth_connected || used == null) return 'unknown'
+  if (q.confidence !== 'live') return 'low'
+  if (window?.resets_at && window.window_duration_mins != null) return 'high'
+  return 'medium'
+}
+
+function kindFromLabel(label: string): UsageWindow['kind'] {
+  const normalized = label.toLowerCase()
+  if (normalized.includes('session') || normalized.includes('hour')) return 'session'
+  if (normalized.includes('week') || normalized.includes('seven day')) return 'weekly'
+  if (normalized.includes('month')) return 'monthly'
+  return 'other'
 }
 
 export function willExhaustWithinDays(

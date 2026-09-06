@@ -248,7 +248,7 @@ describe('usage analytics detail', () => {
         started_at, source, created_at
       ) VALUES (?, ?, ?, ?, ?, 'complete', ?, 'test', ?)
     `).run(
-      'session-1',
+      'claude:session-1',
       'claude',
       'project',
       'anthropic/claude-sonnet-4-5',
@@ -258,7 +258,7 @@ describe('usage analytics detail', () => {
     )
     expect(
       getSessions(db, 'claude', 0, undefined, { model: 'claude-sonnet-4-5' })
-    ).toHaveLength(1)
+    ).toMatchObject([{ id: 'claude:session-1' }])
     raw.close()
   })
 })
@@ -494,7 +494,7 @@ describe('quota snapshot detail persistence', () => {
     raw.close()
   })
 
-  it('uses the stored Codex weekly window for history and runway cards', () => {
+  it('keeps stored Codex session and weekly windows separate in forecasts', () => {
     const raw = new DatabaseSync(':memory:')
     raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
     for (const migration of MIGRATIONS) raw.exec(migration.sql)
@@ -530,13 +530,17 @@ describe('quota snapshot detail persistence', () => {
 
     const observed = getBurn(db, 'codex', 7).filter((point) => !point.projected)
     expect(observed.at(-1)?.used_pct).toBe(4)
-    expect(getProjections(db).find((card) => card.provider === 'codex')?.detail).toMatch(
-      /96% remaining.*Weekly/
-    )
+    expect(getProjections(db).filter((card) => card.provider === 'codex')).toMatchObject([
+      { id: 'codex:primary', window_kind: 'session', window_label: 'Session' },
+      { id: 'codex:secondary', window_kind: 'weekly', window_label: 'Weekly' }
+    ])
     const codexSeries = getBurnSeries(db, 'codex', 7)
-    expect(codexSeries).toHaveLength(1)
-    expect(codexSeries[0]).toMatchObject({ provider: 'codex', label: 'Codex CLI' })
-    expect(codexSeries[0].points[0]).toMatchObject({ used_pct: 4, projected: false })
+    expect(codexSeries).toHaveLength(2)
+    expect(codexSeries).toMatchObject([
+      { provider: 'codex', label: 'Codex · Session', window_kind: 'session' },
+      { provider: 'codex', label: 'Codex · Weekly', window_kind: 'weekly' }
+    ])
+    expect(codexSeries[1].points[0]).toMatchObject({ used_pct: 4, projected: false })
     raw.close()
   })
 

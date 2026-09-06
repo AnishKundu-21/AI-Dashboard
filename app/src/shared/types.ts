@@ -496,20 +496,32 @@ export type ExportFormat = z.infer<typeof ExportFormatSchema>
 export const BurnPointSchema = z.object({
   day: z.string(),
   used_pct: z.number(),
-  projected: z.boolean()
+  projected: z.boolean(),
+  /** Empirical range around a projected quota burn point, when history permits it. */
+  lower_used_pct: z.number().min(0).max(100).optional(),
+  upper_used_pct: z.number().min(0).max(100).optional()
 })
 export type BurnPoint = z.infer<typeof BurnPointSchema>
+
+export const ForecastConfidenceSchema = z.enum(['high', 'medium', 'low', 'unknown'])
+export type ForecastConfidence = z.infer<typeof ForecastConfidenceSchema>
 
 export const BurnSeriesSchema = z.object({
   id: z.string(),
   provider: ProviderIdSchema,
   label: z.string(),
+  window_kind: z.enum(['session', 'weekly', 'monthly', 'other']),
+  forecast_confidence: ForecastConfidenceSchema,
   points: z.array(BurnPointSchema)
 })
 export type BurnSeries = z.infer<typeof BurnSeriesSchema>
 
 export const ProjectionCardSchema = z.object({
+  id: z.string(),
   provider: ProviderIdSchema,
+  window_kind: z.enum(['session', 'weekly', 'monthly', 'other']),
+  window_label: z.string(),
+  forecast_confidence: ForecastConfidenceSchema,
   headline: z.string(),
   detail: z.string(),
   level: z.enum(['good', 'warn', 'info']),

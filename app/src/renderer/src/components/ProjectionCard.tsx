@@ -22,7 +22,10 @@ export function ProjectionCard({ projection: p, quota }: Props) {
           <i className="swatch" style={{ background: meta.color }} />
           {meta.name}
         </h3>
-        <span className={`status ${badge.className}`}>{badge.label}</span>
+        <div className="projection-badges">
+          <span className="status plain">{p.window_label}</span>
+          <span className={`status ${badge.className}`}>{badge.label}</span>
+        </div>
       </div>
 
       <div className="projection-body">
@@ -42,6 +45,10 @@ export function ProjectionCard({ projection: p, quota }: Props) {
           </div>
         </div>
       ) : null}
+
+      <div className="projection-confidence">
+        Forecast confidence: <strong>{p.forecast_confidence}</strong>
+      </div>
 
       {p.recommendation ? (
         <div className="rec">
