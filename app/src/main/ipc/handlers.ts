@@ -67,7 +67,7 @@ export function registerIpcHandlers(): void {
 
   secureHandle(IPC.getModelUsage, (_e, raw) => {
     const input = GetModelUsageInput.parse(raw ?? {})
-    return getModelUsage(getDb(), input.provider, input, input.resolution)
+    return getModelUsage(getDb(), input.provider, input, input.resolution, input.model_key)
   })
 
   secureHandle(IPC.getAnalyticsSnapshot, (_e, raw) => {

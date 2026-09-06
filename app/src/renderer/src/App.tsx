@@ -69,6 +69,10 @@ function dayInUsageTimeZone(timezone: string | undefined, timestampMs: number): 
   }
 }
 
+function modelChartKey(provider: string, model: string): string {
+  return `${provider}\u0000${model}`
+}
+
 export default function App() {
   // Shell -----------------------------------------------------------------
   const [view, setView] = useState<ViewId>('overview')
@@ -93,6 +97,7 @@ export default function App() {
   const [dailyMetric, setDailyMetric] = useState<DailyMetric>('tokens')
   const [usageResolution, setUsageResolution] = useState<UsageResolution>('day')
   const [analyticsMetric, setAnalyticsMetric] = useState<AnalyticsMetric>('tokens_total')
+  const [modelChartFilter, setModelChartFilter] = useState('all')
 
   // Requests --------------------------------------------------------------
   const [loading, setLoading] = useState(true)
@@ -172,13 +177,10 @@ export default function App() {
     try {
       setError(null)
       const base = { provider, ...activePeriod }
-      const [ov, q, d, modelSeries, burnList, m, s, p, a, st, health] = await Promise.all([
+      const [ov, q, d, burnList, m, s, p, a, st, health] = await Promise.all([
         window.api.getOverview(base),
         window.api.getQuotas(),
         window.api.getDailyUsage({ ...base, resolution: chartResolution }),
-        view === 'analytics'
-          ? window.api.getModelUsage({ ...base, resolution: chartResolution })
-          : Promise.resolve([]),
         window.api.getBurnSeries({ provider: 'all', range_days: rangeDays }),
         window.api.getModelMix(base),
         window.api.getSessions({
@@ -201,7 +203,6 @@ export default function App() {
       setOverview(ov)
       setQuotas(q)
       setDaily(d)
-      setModelUsage(modelSeries)
       setBurnSeries(burnList)
       setModels(m)
       setSessions(s)
@@ -238,6 +239,27 @@ export default function App() {
   }, [load])
 
   useEffect(() => {
+    if (!window.api || view !== 'analytics') {
+      setModelUsage([])
+      return
+    }
+    let cancelled = false
+    void window.api.getModelUsage({
+      provider,
+      ...activePeriod,
+      resolution: chartResolution,
+      model_key: modelChartFilter === 'all' ? undefined : modelChartFilter
+    }).then((rows) => {
+      if (!cancelled) setModelUsage(rows)
+    }).catch(() => {
+      if (!cancelled) setModelUsage([])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activePeriod, chartResolution, lastSync, modelChartFilter, provider, view])
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
@@ -261,6 +283,13 @@ export default function App() {
     () => enabledProviders.filter((id) => providerMeta(id).reportsQuota),
     [enabledProviders]
   )
+
+  useEffect(() => {
+    if (modelChartFilter === 'all') return
+    if (!models.some((row) => modelChartKey(row.provider, row.model) === modelChartFilter)) {
+      setModelChartFilter('all')
+    }
+  }, [modelChartFilter, models])
 
   useEffect(() => {
     if (provider !== 'all' && !enabledProviders.includes(provider)) {
@@ -805,7 +834,7 @@ export default function App() {
             <div className="card-head">
               <div>
                 <h3>Usage over time by model</h3>
-                <p>Every observed model in the selected window · click legend items to focus the chart</p>
+                <p>Every observed model in the selected window · choose a model to focus the chart</p>
               </div>
             </div>
             <div className="card-body">
@@ -815,6 +844,9 @@ export default function App() {
                 resolution={chartResolution}
                 currency={currency}
                 locale={locale}
+                availableModels={models}
+                modelFilter={modelChartFilter}
+                onModelFilter={setModelChartFilter}
               />
             </div>
           </article>

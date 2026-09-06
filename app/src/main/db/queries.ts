@@ -616,7 +616,8 @@ export function getModelUsage(
   db: Database.Database,
   provider: ProviderFilter,
   selection: PeriodSelection,
-  resolution: UsageResolution = 'day'
+  resolution: UsageResolution = 'day',
+  modelKey?: string
 ): ModelUsagePoint[] {
   const settings = getSettings(db)
   const timezone = settings.timezone
@@ -669,6 +670,7 @@ export function getModelUsage(
   for (const row of rows) {
     const model = normalizeModelName(row.provider, row.model)
     if (!model) continue
+    if (modelKey && `${row.provider}\u0000${model}` !== modelKey) continue
     const day = bucketOf(row.ts_ms)
     const key = `${day}\u0000${row.provider}\u0000${model.toLowerCase()}`
     let current = grouped.get(key)

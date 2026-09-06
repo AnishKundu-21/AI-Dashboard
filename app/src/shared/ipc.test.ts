@@ -5,6 +5,7 @@ import {
   GetAnalyticsSnapshotInput,
   GetBurnSeriesInput,
   GetDailyUsageInput,
+  GetModelUsageInput,
   GetSessionsInput
 } from './ipc'
 
@@ -78,6 +79,8 @@ describe('analytics period input', () => {
 
   it('defaults to daily resolution and rejects unsupported chart buckets', () => {
     expect(GetDailyUsageInput.parse({ provider: 'claude' }).resolution).toBe('day')
+    expect(GetModelUsageInput.parse({ provider: 'claude', model_key: 'claude\u0000claude-sonnet-4-5' }))
+      .toMatchObject({ resolution: 'day', model_key: 'claude\u0000claude-sonnet-4-5' })
     expect(() => GetDailyUsageInput.parse({ resolution: 'quarter' })).toThrow()
   })
 

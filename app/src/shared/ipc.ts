@@ -60,7 +60,13 @@ export const GetDailyUsageInput = ProviderPeriodInputSchema.and(
   z.object({ resolution: UsageResolutionSchema.default('day') })
 )
 export type GetDailyUsageInput = z.input<typeof GetDailyUsageInput>
-export const GetModelUsageInput = GetDailyUsageInput
+export const GetModelUsageInput = ProviderPeriodInputSchema.and(
+  z.object({
+    resolution: UsageResolutionSchema.default('day'),
+    /** Provider and normalized model, joined with a NUL separator. */
+    model_key: z.string().min(1).max(256).optional()
+  })
+)
 export type GetModelUsageInput = z.input<typeof GetModelUsageInput>
 
 const SessionPeriodInputSchema = z

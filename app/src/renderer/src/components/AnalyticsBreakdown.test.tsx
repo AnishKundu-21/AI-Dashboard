@@ -75,7 +75,7 @@ describe('analytics breakdown', () => {
     }
   })
 
-  it('renders a model trend line with every observed model in its legend', () => {
+  it('renders a model trend line with a model filter', () => {
     const markup = renderToStaticMarkup(
       <ModelUsageChart
         rows={[modelPoint]}
@@ -83,9 +83,13 @@ describe('analytics breakdown', () => {
         resolution="day"
         currency="USD"
         locale="en-US"
+        availableModels={[model]}
+        modelFilter="all"
+        onModelFilter={vi.fn()}
       />
     )
     expect(markup).toContain('Usage over time by model')
     expect(markup).toContain('claude-sonnet-4-5')
+    expect(markup).toContain('Filter model trend chart')
   })
 })

@@ -850,18 +850,19 @@ table,
   grid-column: 1 / -1;
 }
 
-.model-usage-legend {
-  display: flex;
-  max-height: 72px;
-  overflow-y: auto;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 8px;
+.model-filter-bar {
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+  scrollbar-width: thin;
+}
+
+.model-filter-bar .segmented {
+  width: max-content;
 }
 
 .model-usage-shell {
-  min-height: 300px;
+  min-height: 220px;
 }
 
 .model-usage-tooltip {
@@ -872,7 +873,7 @@ table,
 
 .rank-chart {
   position: relative;
-  min-height: 238px;
+  min-height: 212px;
 }
 
 .rank-chart svg {

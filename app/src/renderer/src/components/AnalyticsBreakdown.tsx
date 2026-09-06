@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ModelMixItem, ModelUsagePoint, ProviderCost, UsageResolution } from '@shared/types'
 import { providerMeta } from '@shared/providers'
-import { areaPath, compact, niceMax, smoothPath, tickValues, type Pt } from '../lib/chart'
+import { areaPath, compact, linePath, niceMax, smoothPath, tickValues, type Pt } from '../lib/chart'
 import { formatCurrency, formatTokens } from '../lib/format'
 import { useChartHover, useElementWidth, usePrefersReducedMotion } from '../lib/hooks'
+import { Segmented, type SegmentedOption } from './Segmented'
 
 export type AnalyticsMetric =
   | 'tokens_total'
@@ -53,41 +54,62 @@ const MODEL_LINE_COLORS = [
   '#a3e635', '#38bdf8', '#fb7185', '#818cf8', '#34d399', '#fbbf24'
 ]
 
-/** Model-level trend chart. Every observed model remains available in the legend. */
+function modelSeriesKey(provider: string, model: string): string {
+  return `${provider}\u0000${model}`
+}
+
+/** Model-level trend chart with the same direct filter affordance as providers. */
 export function ModelUsageChart({
   rows,
   metric,
   resolution,
   currency,
-  locale
+  locale,
+  availableModels,
+  modelFilter,
+  onModelFilter
 }: {
   rows: ModelUsagePoint[]
   metric: AnalyticsMetric
   resolution: UsageResolution
   currency: string
   locale: string
+  availableModels: ModelMixItem[]
+  modelFilter: string
+  onModelFilter: (key: string) => void
 }) {
   const reduced = usePrefersReducedMotion()
   const [wrapRef, wrapWidth] = useElementWidth<HTMLDivElement>(760)
-  const [hidden, setHidden] = useState<Set<string>>(new Set())
   const W = Math.max(280, Math.round(wrapWidth))
-  const H = 300
+  const H = 220
   const pad = { l: W < 440 ? 42 : 56, r: 18, t: 18, b: 34 }
   const plotW = W - pad.l - pad.r
   const plotH = H - pad.t - pad.b
+  const compactHourly = resolution === 'hour'
+  const modelOptions: SegmentedOption<string>[] = [
+    { value: 'all', label: 'All' },
+    ...availableModels.map((row) => ({
+      value: modelSeriesKey(row.provider, row.model),
+      label: row.model,
+      color: providerMeta(row.provider).color
+    }))
+  ]
 
-  const { buckets, series, values, max } = (() => {
+  const { buckets, series, values, max } = useMemo(() => {
+    const selectedRows = modelFilter === 'all'
+      ? rows
+      : rows.filter((row) => modelSeriesKey(row.provider, row.model) === modelFilter)
     const starts = new Map<string, number>()
-    for (const row of rows) {
+    for (const row of selectedRows) {
       if (!starts.has(row.day)) starts.set(row.day, row.bucket_start_ms)
     }
     const bucketList = Array.from(starts.keys()).sort(
       (a, b) => (starts.get(a) ?? 0) - (starts.get(b) ?? 0) || a.localeCompare(b)
     )
-    const keyFor = (row: ModelUsagePoint) => `${row.provider}\u0000${row.model}`
+    const keyFor = (row: ModelUsagePoint) => modelSeriesKey(row.provider, row.model)
     const seriesMap = new Map<string, { key: string; model: string; provider: string; total: number }>()
     const valueMap = new Map<string, number>()
-    for (const row of rows) {
+    for (const row of selectedRows) {
       const key = keyFor(row)
       const total = valueOf(row, metric)
       const current = seriesMap.get(key)
@@ -100,16 +122,15 @@ export function ModelUsageChart({
       valueMap.set(`${row.day}:${key}`, (valueMap.get(`${row.day}:${key}`) ?? 0) + total)
     }
     const ranked = Array.from(seriesMap.values()).sort((a, b) => b.total - a.total)
-    const visible = ranked.filter((item) => !hidden.has(item.key))
     let peak = 0
     for (const bucket of bucketList) {
-      for (const item of visible) {
+      for (const item of ranked) {
         peak = Math.max(peak, valueMap.get(`${bucket}:${item.key}`) ?? 0)
       }
     }
     const chartMax = niceMax(peak)
     return { buckets: bucketList, series: ranked, values: valueMap, max: chartMax }
-  })()
+  }, [metric, modelFilter, rows])
 
   const { probe, onMove, onLeave } = useChartHover(buckets.length, W, pad.l, pad.r)
   const xFor = (index: number) =>
@@ -121,49 +142,34 @@ export function ModelUsageChart({
     if (resolution === 'month') return bucket.slice(0, 7)
     if (resolution === 'week') return `W/O ${bucket.slice(5)}`
     if (resolution === 'hour') {
-      const [day, hour, offset] = bucket.split(' ')
-      return `${day.slice(5)} ${hour}${offset ? ` ${offset}` : ''}`
+      const [day, hour] = bucket.split(' ')
+      return `${day.slice(5)} ${hour ?? ''}`
     }
     return bucket.slice(5)
   }
 
-  if (series.length === 0 || buckets.length === 0) {
-    return (
-      <div className="empty compact-empty">
-        <strong>No model usage in this window</strong>
-        <p>Try another metric, provider, or date range.</p>
-      </div>
-    )
-  }
-
-  const visible = series.filter((item) => !hidden.has(item.key))
-  const labelStep = Math.max(1, Math.ceil(buckets.length / Math.max(4, Math.floor(plotW / 78))))
+  const labelStep = Math.max(
+    1,
+    Math.ceil(buckets.length / Math.max(compactHourly ? 5 : 4, Math.floor(plotW / (compactHourly ? 132 : 78))))
+  )
   const hoverBucket = probe.index == null ? undefined : buckets[probe.index]
 
   return (
     <div className="model-usage-chart" ref={wrapRef}>
-      <div className="model-usage-legend" aria-label="Models in chart">
-        {series.map((item, index) => {
-          const off = hidden.has(item.key)
-          return (
-            <button
-              key={item.key}
-              type="button"
-              className={`legend-item${off ? ' off' : ''}`}
-              onClick={() => setHidden((previous) => {
-                const next = new Set(previous)
-                if (next.has(item.key)) next.delete(item.key)
-                else if (next.size < series.length - 1) next.add(item.key)
-                return next
-              })}
-              title={`${item.model} · ${providerMeta(item.provider).name}`}
-            >
-              <i style={{ background: MODEL_LINE_COLORS[index % MODEL_LINE_COLORS.length] }} />
-              {item.model}
-            </button>
-          )
-        })}
+      <div className="model-filter-bar">
+        <Segmented
+          options={modelOptions}
+          value={modelFilter}
+          onChange={onModelFilter}
+          ariaLabel="Filter model trend chart"
+        />
       </div>
+      {series.length === 0 || buckets.length === 0 ? (
+        <div className="empty compact-empty">
+          <strong>No model usage in this window</strong>
+          <p>Try another metric, provider, or date range.</p>
+        </div>
+      ) : (
       <div className="chart-shell model-usage-shell">
         <svg
           className="chart-svg"
@@ -193,7 +199,7 @@ export function ModelUsageChart({
               pointerEvents="none"
             />
           ) : null}
-          {visible.map((item, index) => {
+          {series.map((item, index) => {
             const points: Pt[] = buckets.map((bucket, bucketIndex) => ({
               x: xFor(bucketIndex),
               y: yFor(values.get(`${bucket}:${item.key}`) ?? 0)
@@ -203,11 +209,11 @@ export function ModelUsageChart({
                 {points.length > 1 ? (
                   <path
                     className="chart-line"
-                    d={smoothPath(points)}
+                    d={compactHourly ? linePath(points) : smoothPath(points)}
                     stroke={MODEL_LINE_COLORS[series.indexOf(item) % MODEL_LINE_COLORS.length]}
                     strokeWidth={index === 0 ? 2.25 : 1.6}
                     opacity={index === 0 ? 0.95 : 0.7}
-                    style={reduced ? { animation: 'none' } : undefined}
+                    style={reduced || compactHourly ? { animation: 'none' } : undefined}
                   />
                 ) : (
                   <circle
@@ -229,7 +235,7 @@ export function ModelUsageChart({
         {hoverBucket ? (
           <div className="chart-tooltip model-usage-tooltip" style={{ left: probe.x, top: 8 }}>
             <div className="tt-title">{label(hoverBucket)}</div>
-            {visible
+            {series
               .map((item) => ({ item, value: values.get(`${hoverBucket}:${item.key}`) ?? 0 }))
               .filter(({ value }) => value > 0)
               .sort((a, b) => b.value - a.value)
@@ -244,6 +250,7 @@ export function ModelUsageChart({
           </div>
         ) : null}
       </div>
+      )}
     </div>
   )
 }
@@ -281,7 +288,7 @@ export function AnalyticsRankChart({
   }
 
   const W = Math.max(260, Math.round(wrapWidth))
-  const H = 238
+  const H = 212
   const pad = { l: W < 440 ? 38 : 54, r: 16, t: 18, b: 42 }
   const plotW = W - pad.l - pad.r
   const plotH = H - pad.t - pad.b

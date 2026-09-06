@@ -224,6 +224,7 @@ describe('usage analytics detail', () => {
       session_count: 1,
       unpriced_calls: 1
     })
+    expect(getModelUsage(db, 'claude', 0, 'day', 'claude\u0000missing-model')).toEqual([])
 
     const models = getModelMix(db, 'claude', 0)
     expect(models).toHaveLength(1)

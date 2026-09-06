@@ -4,6 +4,7 @@ import { providerMeta, providerIds, type ProviderId } from '@shared/providers'
 import {
   areaPath,
   compact,
+  linePath,
   niceMax,
   pathLength,
   shortDay,
@@ -38,7 +39,7 @@ interface Props {
   locale: string
 }
 
-const H = 260
+const H = 220
 
 /** Axis gutters shrink on narrow cards so the plot keeps usable width. */
 function padsFor(width: number) {
@@ -108,11 +109,14 @@ export function DailyChart({
   const { probe, onMove, onLeave } = useChartHover(days.length, W, PAD.l, PAD.r)
 
   const moneyMetric = metric === 'cost' || metric === 'provider-cost' || metric === 'savings'
+  const compactHourly = resolution === 'hour'
   const fmt = (n: number) => moneyMetric ? formatCurrency(n, currency, locale) : compact(n)
   const bucketLabel = (bucket: string, verbose = false) => {
     if (resolution === 'hour') {
       const [day, hour, offset] = bucket.split(' ')
-      return `${verbose ? weekdayLabel(day) : shortDay(day)} · ${hour ?? ''}${offset ? ` ${offset}` : ''}`
+      return verbose
+        ? `${weekdayLabel(day)} · ${hour ?? ''}${offset ? ` ${offset}` : ''}`
+        : `${shortDay(day)} ${hour ?? ''}`
     }
     if (resolution === 'week') return verbose ? `Week of ${weekdayLabel(bucket)}` : shortDay(bucket)
     if (resolution === 'month') return bucket.slice(0, 7)
@@ -128,7 +132,10 @@ export function DailyChart({
     )
   }
 
-  const labelStep = Math.max(1, Math.ceil(days.length / Math.max(4, Math.floor(plotW / 74))))
+  const labelStep = Math.max(
+    1,
+    Math.ceil(days.length / Math.max(compactHourly ? 5 : 4, Math.floor(plotW / (compactHourly ? 132 : 74))))
+  )
   // The final tick is only worth drawing if it clears the previous one.
   const lastStepped = Math.floor((days.length - 1) / labelStep) * labelStep
   const showFinal = (days.length - 1 - lastStepped) * (plotW / days.length) >= 42
@@ -211,10 +218,10 @@ export function DailyChart({
               x: xFor(i),
               y: yFor(cell.get(`${day}:${p}`) ?? 0)
             }))
-            const len = pathLength(pts)
+            const len = compactHourly ? 0 : pathLength(pts)
             return (
               <g key={p} opacity={selectedDay ? 0.82 : 1}>
-                {pts.length > 1 ? (
+                {!compactHourly && pts.length > 1 ? (
                   <path
                     className="chart-area"
                     d={areaPath(pts, yFor(0))}
@@ -225,17 +232,17 @@ export function DailyChart({
                 {pts.length > 1 ? (
                   <path
                     className="chart-line"
-                    d={smoothPath(pts)}
+                    d={compactHourly ? linePath(pts) : smoothPath(pts)}
                     stroke={providerMeta(p).color}
                     strokeWidth={2}
-                    style={reduced ? { animation: 'none' } : {
+                    style={reduced || compactHourly ? { animation: 'none' } : {
                       ['--len' as string]: len,
                       strokeDasharray: len,
                       animationDelay: `${pi * 70}ms`
                     }}
                   />
                 ) : null}
-                {pts.map((point, index) => {
+                {!compactHourly && pts.map((point, index) => {
                   const value = cell.get(`${days[index]}:${p}`) ?? 0
                   if (value <= 0) return null
                   return (
