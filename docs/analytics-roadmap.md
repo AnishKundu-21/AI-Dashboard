@@ -2,9 +2,9 @@
 
 ## First release
 
-1. Timezone-correct selected-period and previous-period comparison.
-2. Custom date ranges plus hourly, daily, weekly, and monthly usage series.
-3. Local saved views, current-filter exports, and chart-image downloads.
+1. [x] Timezone-correct selected-period and previous-period comparison.
+2. [x] Custom date ranges plus hourly, daily, weekly, and monthly usage series.
+3. [ ] Local saved views, current-filter exports, and chart-image downloads.
 4. Opt-in local attribution filters for repository basename, branch, and device
    label, with explicit coverage.
 5. Context-window, cache, call/session, model-switching, pricing, and observed

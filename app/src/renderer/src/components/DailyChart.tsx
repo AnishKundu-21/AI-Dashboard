@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { DailyUsagePoint } from '@shared/types'
+import type { DailyUsagePoint, UsageResolution } from '@shared/types'
 import { providerMeta, providerIds, type ProviderId } from '@shared/providers'
 import {
   areaPath,
@@ -31,6 +31,7 @@ export type DailyMetric =
 interface Props {
   data: DailyUsagePoint[]
   metric: DailyMetric
+  resolution: UsageResolution
   selectedDay?: string
   onSelectDay?: (day: string) => void
   currency: string
@@ -49,6 +50,7 @@ function padsFor(width: number) {
 export function DailyChart({
   data,
   metric,
+  resolution,
   selectedDay,
   onSelectDay,
   currency,
@@ -79,7 +81,13 @@ export function DailyChart({
         default: return d.tokens_total
       }
     }
-    const dayList = Array.from(new Set(data.map((d) => d.day))).sort()
+    const starts = new Map<string, number>()
+    for (const point of data) {
+      if (!starts.has(point.day)) starts.set(point.day, point.bucket_start_ms)
+    }
+    const dayList = Array.from(starts.keys()).sort(
+      (a, b) => (starts.get(a) ?? 0) - (starts.get(b) ?? 0) || a.localeCompare(b)
+    )
     const present = providerIds().filter((p) => data.some((d) => d.provider === p))
     const map = new Map<string, number>()
     for (const d of data) {
@@ -101,6 +109,15 @@ export function DailyChart({
 
   const moneyMetric = metric === 'cost' || metric === 'provider-cost' || metric === 'savings'
   const fmt = (n: number) => moneyMetric ? formatCurrency(n, currency, locale) : compact(n)
+  const bucketLabel = (bucket: string, verbose = false) => {
+    if (resolution === 'hour') {
+      const [day, hour, offset] = bucket.split(' ')
+      return `${verbose ? weekdayLabel(day) : shortDay(day)} · ${hour ?? ''}${offset ? ` ${offset}` : ''}`
+    }
+    if (resolution === 'week') return verbose ? `Week of ${weekdayLabel(bucket)}` : shortDay(bucket)
+    if (resolution === 'month') return bucket.slice(0, 7)
+    return verbose ? weekdayLabel(bucket) : shortDay(bucket)
+  }
 
   if (days.length === 0) {
     return (
@@ -152,11 +169,11 @@ export function DailyChart({
           height={H}
           viewBox={`0 0 ${W} ${H}`}
           role="img"
-          aria-label="Daily usage by provider"
+          aria-label={`${resolution} usage by provider`}
           onPointerMove={onMove}
           onPointerLeave={onLeave}
           onClick={() => hover && onSelectDay?.(hover)}
-          style={{ cursor: hover ? 'pointer' : undefined }}
+          style={{ cursor: hover && onSelectDay ? 'pointer' : undefined }}
         >
           {tickValues(max, 4).map((t) => (
             <g key={t}>
@@ -256,7 +273,7 @@ export function DailyChart({
             if (!stepped && !final) return null
             return (
               <text key={day} x={xFor(di)} y={H - 8} textAnchor="middle">
-                {shortDay(day)}
+                {bucketLabel(day)}
               </text>
             )
           })}
@@ -271,7 +288,7 @@ export function DailyChart({
               maxWidth: Math.max(140, W - 16)
             }}
           >
-            <div className="tt-title">{weekdayLabel(hover)}</div>
+            <div className="tt-title">{bucketLabel(hover, true)}</div>
             {visible.map((p) => {
               const v = cell.get(`${hover}:${p}`) ?? 0
               if (v <= 0) return null

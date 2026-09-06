@@ -26,6 +26,12 @@ export const RangeDaysSchema = z.union([
 ])
 export type RangeDays = z.infer<typeof RangeDaysSchema>
 
+export const UsageResolutionSchema = z.enum(['hour', 'day', 'week', 'month'])
+export type UsageResolution = z.infer<typeof UsageResolutionSchema>
+
+/** Keeps custom chart payloads bounded to the same one-year scale as presets. */
+export const MAX_CUSTOM_ANALYTICS_DAYS = 366
+
 /** An ISO calendar date, deliberately without a time or machine timezone. */
 export const CalendarDaySchema = z
   .string()
@@ -63,6 +69,20 @@ export const AnalyticsPeriodInputSchema = AnalyticsPeriodFieldsSchema.superRefin
         message: 'start_day must not be after end_day',
         path: ['end_day']
       })
+    }
+    if (value.start_day && value.end_day) {
+      const days = Math.floor(
+        (Date.parse(`${value.end_day}T00:00:00.000Z`) -
+          Date.parse(`${value.start_day}T00:00:00.000Z`)) /
+          86_400_000
+      ) + 1
+      if (days > MAX_CUSTOM_ANALYTICS_DAYS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `custom analytics ranges are limited to ${MAX_CUSTOM_ANALYTICS_DAYS} days`,
+          path: ['end_day']
+        })
+      }
     }
     if (hasCustomRange && value.range_days !== undefined) {
       ctx.addIssue({
@@ -400,6 +420,8 @@ export type AnalyticsSnapshot = z.infer<typeof AnalyticsSnapshotSchema>
 
 export const DailyUsagePointSchema = z.object({
   day: z.string(),
+  /** Stable chronological key; distinct from the display bucket during DST. */
+  bucket_start_ms: z.number(),
   provider: ProviderIdSchema,
   tokens_total: z.number(),
   uncached_input: z.number(),

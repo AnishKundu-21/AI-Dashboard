@@ -4,6 +4,7 @@ import {
   ExportInput,
   GetAnalyticsSnapshotInput,
   GetBurnSeriesInput,
+  GetDailyUsageInput,
   GetSessionsInput
 } from './ipc'
 
@@ -75,6 +76,11 @@ describe('analytics period input', () => {
     })
   })
 
+  it('defaults to daily resolution and rejects unsupported chart buckets', () => {
+    expect(GetDailyUsageInput.parse({ provider: 'claude' }).resolution).toBe('day')
+    expect(() => GetDailyUsageInput.parse({ resolution: 'quarter' })).toThrow()
+  })
+
   it('rejects incomplete, reversed, and impossible custom dates', () => {
     expect(() => AnalyticsPeriodInputSchema.parse({ start_day: '2026-09-02' })).toThrow()
     expect(() =>
@@ -96,5 +102,11 @@ describe('analytics period input', () => {
         end_day: '2026-09-04'
       })
     ).toThrow()
+    expect(() =>
+      AnalyticsPeriodInputSchema.parse({
+        start_day: '2025-01-01',
+        end_day: '2026-01-02'
+      })
+    ).toThrow('limited to 366 days')
   })
 })

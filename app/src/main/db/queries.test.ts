@@ -377,7 +377,17 @@ describe('analytics period comparison', () => {
     const customOverview = getOverview(db, 'claude', selection)
     expect(customOverview.tokens_total).toBe(200)
     expect(customOverview.range_days).toBeNull()
-    expect(getDailyUsage(db, 'claude', selection).map((point) => point.tokens_total)).toEqual([100, 100])
+    expect(getDailyUsage(db, 'claude', selection).map((point) => point.tokens_total)).toEqual([100, 0, 100])
+    const hourly = getDailyUsage(db, 'claude', selection, 'hour')
+    expect(hourly).toHaveLength(72)
+    expect(hourly.find((point) => point.day === '2026-09-02 12:00 +00:00')).toMatchObject({ tokens_total: 100 })
+    expect(hourly.find((point) => point.day === '2026-09-03 12:00 +00:00')).toMatchObject({ tokens_total: 0 })
+    expect(getDailyUsage(db, 'claude', selection, 'week')).toMatchObject([
+      { day: '2026-08-31', tokens_total: 200 }
+    ])
+    expect(getDailyUsage(db, 'claude', selection, 'month')).toMatchObject([
+      { day: '2026-09-01', tokens_total: 200 }
+    ])
     expect(getModelMix(db, 'claude', selection)).toMatchObject([
       { model: 'claude-sonnet-4-5', tokens_total: 200 }
     ])
@@ -395,6 +405,37 @@ describe('analytics period comparison', () => {
     raw.close()
   })
 
+  it('does not invent zero-valued hours beyond the current local hour', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-06T12:37:00.000Z'))
+    try {
+      const raw = new DatabaseSync(':memory:')
+      raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
+      for (const migration of MIGRATIONS) raw.exec(migration.sql)
+      const db = raw as unknown as Database.Database
+      setSettings(db, { timezone: 'UTC' })
+      raw.prepare(`
+        INSERT INTO usage_events (
+          dedupe_key, provider, session_id, project, model, ts_ms,
+          uncached_input, cached_input, cache_creation, output, reasoning,
+          cost_usd, cache_savings_usd, reported_cost_usd, source
+        ) VALUES ('this-morning', 'claude', 'current-session', 'project', 'claude-sonnet-4-5', ?, 10, 0, 0, 0, 0, 0, 0, NULL, 'test')
+      `).run(Date.parse('2026-09-06T10:15:00.000Z'))
+
+      const hourly = getDailyUsage(
+        db,
+        'claude',
+        { start_day: '2026-09-06', end_day: '2026-09-06' },
+        'hour'
+      )
+      expect(hourly.at(-1)).toMatchObject({ day: '2026-09-06 11:00 +00:00' })
+      expect(hourly).not.toContainEqual(expect.objectContaining({ day: '2026-09-06 12:00 +00:00' }))
+      raw.close()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not fabricate a prior period for lifetime analytics', () => {
     const raw = new DatabaseSync(':memory:')
     raw.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)')
@@ -404,6 +445,9 @@ describe('analytics period comparison', () => {
     const snapshot = getAnalyticsSnapshot(db, { provider: 'all', range_days: 0 })
     expect(snapshot.window.label).toBe('Lifetime')
     expect(snapshot.previous).toBeNull()
+    expect(() => getDailyUsage(db, 'all', 0, 'hour')).toThrow(
+      'Lifetime usage charts support daily resolution only.'
+    )
     raw.close()
   })
 })

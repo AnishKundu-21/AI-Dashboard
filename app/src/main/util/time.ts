@@ -6,6 +6,7 @@
  * because it formats ISO-ordered parts. Assembling a day from `Date` getters
  * instead would silently answer in the host's zone.
  */
+import type { UsageResolution } from '../../shared/types'
 
 const DAY_MS = 86_400_000
 
@@ -26,11 +27,18 @@ export type ResolvedAnalyticsPeriod = {
   previous: ResolvedAnalyticsWindow | null
 }
 
+export type UsageBucketPoint = { key: string; startMs: number }
+
 export function resolveTimeZone(timezone: string | null | undefined): string {
   if (!timezone || timezone === 'system') {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   }
-  return timezone
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format()
+    return timezone
+  } catch {
+    return 'UTC'
+  }
 }
 
 function makeFormatter(timeZone: string): Intl.DateTimeFormat {
@@ -52,6 +60,30 @@ function makeFormatter(timeZone: string): Intl.DateTimeFormat {
   }
 }
 
+function makeHourFormatter(timeZone: string): Intl.DateTimeFormat {
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23'
+  }
+  try {
+    return new Intl.DateTimeFormat('en-CA', options)
+  } catch {
+    return new Intl.DateTimeFormat('en-CA', { ...options, timeZone: 'UTC' })
+  }
+}
+
+function offsetLabel(offsetMs: number): string {
+  const sign = offsetMs >= 0 ? '+' : '-'
+  const totalMinutes = Math.round(Math.abs(offsetMs) / 60_000)
+  const hours = Math.floor(totalMinutes / 60).toString().padStart(2, '0')
+  const minutes = (totalMinutes % 60).toString().padStart(2, '0')
+  return `${sign}${hours}:${minutes}`
+}
+
 /**
  * Builds a reusable `ms -> YYYY-MM-DD` formatter. Constructing an
  * `Intl.DateTimeFormat` is expensive relative to formatting with one, and a
@@ -69,6 +101,32 @@ export function dayInZone(
   timezone: string | null | undefined
 ): string {
   return makeDayFormatter(timezone)(timestampMs)
+}
+
+/** A reusable calendar bucket formatter for usage charts. */
+export function makeUsageBucketFormatter(
+  timezone: string | null | undefined,
+  resolution: UsageResolution
+): (timestampMs: number) => string {
+  const zone = resolveTimeZone(timezone)
+  const dayOf = makeDayFormatter(zone)
+  if (resolution === 'day') return dayOf
+  if (resolution === 'hour') {
+    const format = makeHourFormatter(zone)
+    return (timestampMs) => {
+      const parts = format.formatToParts(new Date(timestampMs))
+      const value = (type: string) => parts.find((part) => part.type === type)?.value ?? '00'
+      return `${value('year')}-${value('month')}-${value('day')} ${value('hour')}:00 ${offsetLabel(zoneOffsetMs(timestampMs, zone))}`
+    }
+  }
+  if (resolution === 'month') {
+    return (timestampMs) => `${dayOf(timestampMs).slice(0, 7)}-01`
+  }
+  return (timestampMs) => {
+    const day = dayOf(timestampMs)
+    const weekday = new Date(`${day}T00:00:00.000Z`).getUTCDay()
+    return addCalendarDays(day, -((weekday + 6) % 7))
+  }
 }
 
 /**
@@ -163,6 +221,9 @@ export function resolveAnalyticsPeriod(
 ): ResolvedAnalyticsPeriod {
   const zone = resolveTimeZone(timezone)
   if (selection.start_day && selection.end_day) {
+    if (selection.end_day > dayInZone(nowMs, zone)) {
+      throw new RangeError('Custom analytics ranges cannot end after today.')
+    }
     const days = calendarDayCount(selection.start_day, selection.end_day)
     const current: ResolvedAnalyticsWindow = {
       startDay: selection.start_day,
@@ -226,4 +287,113 @@ export function enumerateDays(fromDay: string, toDay: string): string[] {
     cursor += DAY_MS
   }
   return days
+}
+
+/**
+ * Every bucket intersecting an inclusive local-date window. Filling these
+ * explicitly prevents charts from rendering a two-day quiet gap as adjacent
+ * points, and the elapsed-hour loop preserves both fall-back 01:00 hours.
+ */
+export function usageBucketStartMs(
+  timestampMs: number,
+  timezone: string | null | undefined,
+  resolution: UsageResolution
+): number {
+  if (resolution === 'hour') {
+    const zone = resolveTimeZone(timezone)
+    const bucketOf = makeUsageBucketFormatter(zone, 'hour')
+    const key = bucketOf(timestampMs)
+    const parts = makeHourFormatter(zone).formatToParts(new Date(timestampMs))
+    const value = (type: string): number =>
+      Number(parts.find((part) => part.type === type)?.value)
+    // Rebuild the usual wall-clock boundary first. When a zone changes its
+    // offset by 30 minutes (Lord Howe), that wall-clock time can be skipped or
+    // belong to the earlier offset. Walk forward to the first actual instant
+    // carrying this exact local-hour-and-offset key.
+    const candidate =
+      Date.UTC(value('year'), value('month') - 1, value('day'), value('hour')) -
+      zoneOffsetMs(timestampMs, zone)
+    for (let step = 0; step <= 60; step += 1) {
+      const cursor = candidate + step * 60_000
+      if (bucketOf(cursor) === key) return cursor
+    }
+
+    // Defensive fallback for an unexpected Intl implementation. Normal
+    // IANA zones always return inside the loop above.
+    return Math.floor(timestampMs / 3_600_000) * 3_600_000
+  }
+  const key = makeUsageBucketFormatter(timezone, resolution)(timestampMs)
+  return startOfDayMs(key.slice(0, 10), timezone)
+}
+
+export function enumerateUsageBucketPoints(
+  fromDay: string,
+  toDay: string,
+  timezone: string | null | undefined,
+  resolution: UsageResolution,
+  /**
+   * Do not create zero-valued buckets beyond this instant. Existing events
+   * remain visible in their in-progress bucket; this only prevents a chart
+   * from implying that future hours have already recorded zero usage.
+   */
+  fillUntilMs?: number
+): UsageBucketPoint[] {
+  const bucketOf = makeUsageBucketFormatter(timezone, resolution)
+  if (resolution === 'day') {
+    return enumerateDays(fromDay, toDay).map((key) => ({
+      key,
+      startMs: startOfDayMs(key, timezone)
+    }))
+  }
+  if (resolution === 'hour') {
+    const buckets = new Map<string, UsageBucketPoint>()
+    const endMs = Math.min(
+      startOfDayMs(addCalendarDays(toDay, 1), timezone),
+      fillUntilMs ?? Number.POSITIVE_INFINITY
+    )
+    // Sampling actual instants lets us enumerate the variable-width hour
+    // buckets made by 30-minute DST changes without inventing a wall-clock
+    // time that never occurred. Fifteen minutes safely observes every modern
+    // IANA offset transition while remaining small beside the chart payload.
+    for (let cursor = startOfDayMs(fromDay, timezone); cursor < endMs; cursor += 15 * 60_000) {
+      const key = bucketOf(cursor)
+      const startMs = usageBucketStartMs(cursor, timezone, 'hour')
+      const existing = buckets.get(key)
+      if (!existing || startMs < existing.startMs) buckets.set(key, { key, startMs })
+    }
+    return Array.from(buckets.values()).sort((a, b) => a.startMs - b.startMs)
+  }
+  if (resolution === 'week') {
+    const buckets: UsageBucketPoint[] = []
+    const last = bucketOf(startOfDayMs(toDay, timezone))
+    for (let cursor = bucketOf(startOfDayMs(fromDay, timezone)); cursor <= last; cursor = addCalendarDays(cursor, 7)) {
+      buckets.push({ key: cursor, startMs: startOfDayMs(cursor, timezone) })
+    }
+    return buckets
+  }
+
+  const buckets: UsageBucketPoint[] = []
+  const [fromYear, fromMonth] = fromDay.split('-').map(Number)
+  const [toYear, toMonth] = toDay.split('-').map(Number)
+  let year = fromYear
+  let month = fromMonth
+  while (year < toYear || (year === toYear && month <= toMonth)) {
+    const key = `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-01`
+    buckets.push({ key, startMs: startOfDayMs(key, timezone) })
+    month += 1
+    if (month === 13) {
+      year += 1
+      month = 1
+    }
+  }
+  return buckets
+}
+
+export function enumerateUsageBuckets(
+  fromDay: string,
+  toDay: string,
+  timezone: string | null | undefined,
+  resolution: UsageResolution
+): string[] {
+  return enumerateUsageBucketPoints(fromDay, toDay, timezone, resolution).map((bucket) => bucket.key)
 }

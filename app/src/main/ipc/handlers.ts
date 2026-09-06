@@ -6,6 +6,7 @@ import {
   GetAnalyticsSnapshotInput,
   GetBurnInput,
   GetBurnSeriesInput,
+  GetDailyUsageInput,
   GetOverviewInput,
   GetSessionsInput,
   IPC,
@@ -53,8 +54,8 @@ export function registerIpcHandlers(): void {
   secureHandle(IPC.getQuotas, () => getLatestQuotas(getDb()))
 
   secureHandle(IPC.getDailyUsage, (_e, raw) => {
-    const input = GetOverviewInput.parse(raw ?? {})
-    return getDailyUsage(getDb(), input.provider, input)
+    const input = GetDailyUsageInput.parse(raw ?? {})
+    return getDailyUsage(getDb(), input.provider, input, input.resolution)
   })
 
   secureHandle(IPC.getBurn, (_e, raw) => {

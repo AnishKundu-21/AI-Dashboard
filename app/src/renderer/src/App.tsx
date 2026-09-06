@@ -12,7 +12,8 @@ import type {
   ProviderId,
   QuotaSnapshot,
   RangeDays,
-  SessionRow
+  SessionRow,
+  UsageResolution
 } from '@shared/types'
 import {
   enabledProviderIds as getEnabledProviderIds,
@@ -50,6 +51,22 @@ import {
 import { compact } from './lib/chart'
 import { useCollapsedNav, useNow, useTheme } from './lib/hooks'
 
+function dayInUsageTimeZone(timezone: string | undefined, timestampMs: number): string {
+  const timeZone = !timezone || timezone === 'system' ? undefined : timezone
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(new Date(timestampMs))
+    const value = (type: string) => parts.find((part) => part.type === type)?.value ?? '01'
+    return `${value('year')}-${value('month')}-${value('day')}`
+  } catch {
+    return new Date(timestampMs).toISOString().slice(0, 10)
+  }
+}
+
 export default function App() {
   // Shell -----------------------------------------------------------------
   const [view, setView] = useState<ViewId>('overview')
@@ -72,6 +89,7 @@ export default function App() {
   const [sessionLimit, setSessionLimit] = useState(100)
   const [burnProvider, setBurnProvider] = useState<ProviderId | 'all'>('all')
   const [dailyMetric, setDailyMetric] = useState<DailyMetric>('tokens')
+  const [usageResolution, setUsageResolution] = useState<UsageResolution>('day')
   const [analyticsMetric, setAnalyticsMetric] = useState<AnalyticsMetric>('tokens_total')
 
   // Requests --------------------------------------------------------------
@@ -96,6 +114,7 @@ export default function App() {
 
   const searchRef = useRef<HTMLInputElement>(null)
   const now = useNow(20_000)
+  const maxCustomEndDay = dayInUsageTimeZone(settings?.timezone, now)
 
   const activePeriod = useMemo(
     () => (view === 'analytics' && customAnalyticsRange
@@ -103,6 +122,9 @@ export default function App() {
       : { range_days: rangeDays }),
     [customAnalyticsRange, rangeDays, view]
   )
+  const isLifetimeAnalytics =
+    view === 'analytics' && 'range_days' in activePeriod && activePeriod.range_days === 0
+  const chartResolution = view === 'analytics' && !isLifetimeAnalytics ? usageResolution : 'day'
 
   const filter = useMemo(
     () => ({
@@ -126,6 +148,12 @@ export default function App() {
     setSessionLimit(100)
   }, [activePeriod, provider, searchDebounced, selectedDay, selectedModel, sessionSort])
 
+  useEffect(() => {
+    if (isLifetimeAnalytics && usageResolution !== 'day') {
+      setUsageResolution('day')
+    }
+  }, [isLifetimeAnalytics, usageResolution])
+
   const pushToast = useCallback((message: string, tone: ToastItem['tone'] = 'ok') => {
     const id = ++toastId.current
     setToasts((prev) => [...prev.slice(-2), { id, message, tone }])
@@ -144,7 +172,7 @@ export default function App() {
       const [ov, q, d, burnList, m, s, p, a, st, health] = await Promise.all([
         window.api.getOverview(base),
         window.api.getQuotas(),
-        window.api.getDailyUsage(base),
+        window.api.getDailyUsage({ ...base, resolution: chartResolution }),
         window.api.getBurnSeries({ provider: 'all', range_days: rangeDays }),
         window.api.getModelMix(base),
         window.api.getSessions({
@@ -189,7 +217,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [activePeriod, provider, searchDebounced, selectedDay, selectedModel, sessionSort, sessionLimit, view])
+  }, [activePeriod, chartResolution, provider, searchDebounced, selectedDay, selectedModel, sessionSort, sessionLimit, view])
 
   useEffect(() => {
     void load()
@@ -657,34 +685,57 @@ export default function App() {
         <div className="card-head">
           <div>
             <h3>Usage over time by provider</h3>
-            <p>Event-grain, timezone-aware totals · click the chart to filter sessions to that day</p>
+            <p>
+              {chartResolution === 'day'
+                ? 'Event-grain, timezone-aware totals · click the chart to filter sessions to that day'
+                : `Event-grain, timezone-aware ${chartResolution} buckets`}
+            </p>
           </div>
-          <select
-            className="select analytics-metric-select"
-            value={dailyMetric}
-            aria-label="Daily chart metric"
-            onChange={(e) => setDailyMetric(e.target.value as DailyMetric)}
-          >
-            <option value="tokens">Total tokens</option>
-            <option value="input">Uncached input</option>
-            <option value="cache-read">Cache reads</option>
-            <option value="cache-write">Cache writes</option>
-            <option value="output">Output tokens</option>
-            <option value="reasoning">Reasoning tokens</option>
-            <option value="calls">Model calls</option>
-            <option value="sessions">Sessions</option>
-            <option value="cost">API-equivalent cost</option>
-            <option value="provider-cost">Provider-reported cost</option>
-            <option value="savings">Cache savings</option>
-          </select>
+          <div className="analytics-chart-controls">
+            <select
+              className="select analytics-metric-select"
+              value={chartResolution}
+              aria-label="Usage chart resolution"
+              onChange={(e) => {
+                setUsageResolution(e.target.value as UsageResolution)
+                setSelectedDay(undefined)
+              }}
+            >
+              <option value="hour" disabled={isLifetimeAnalytics}>Hourly</option>
+              <option value="day">Daily</option>
+              <option value="week" disabled={isLifetimeAnalytics}>Weekly (Mon start)</option>
+              <option value="month" disabled={isLifetimeAnalytics}>Monthly</option>
+            </select>
+            <select
+              className="select analytics-metric-select"
+              value={dailyMetric}
+              aria-label="Usage chart metric"
+              onChange={(e) => setDailyMetric(e.target.value as DailyMetric)}
+            >
+              <option value="tokens">Total tokens</option>
+              <option value="input">Uncached input</option>
+              <option value="cache-read">Cache reads</option>
+              <option value="cache-write">Cache writes</option>
+              <option value="output">Output tokens</option>
+              <option value="reasoning">Reasoning tokens</option>
+              <option value="calls">Model calls</option>
+              <option value="sessions">Sessions</option>
+              <option value="cost">API-equivalent cost</option>
+              <option value="provider-cost">Provider-reported cost</option>
+              <option value="savings">Cache savings</option>
+            </select>
+          </div>
         </div>
         <DailyChart
           data={daily}
           metric={dailyMetric}
+          resolution={chartResolution}
           currency={currency}
           locale={locale}
-          selectedDay={selectedDay}
-          onSelectDay={(day) => setSelectedDay(day === selectedDay ? undefined : day)}
+          selectedDay={chartResolution === 'day' ? selectedDay : undefined}
+          onSelectDay={chartResolution === 'day'
+            ? (day) => setSelectedDay(day === selectedDay ? undefined : day)
+            : undefined}
         />
       </article>
 
@@ -1038,10 +1089,17 @@ export default function App() {
             rangeDays={rangeDays}
             onRange={(days) => {
               setCustomAnalyticsRange(undefined)
+              setSelectedDay(undefined)
               setRangeDays(days)
             }}
             customDateRange={view === 'analytics' ? customAnalyticsRange : undefined}
-            onCustomDateRange={view === 'analytics' ? setCustomAnalyticsRange : undefined}
+            onCustomDateRange={view === 'analytics'
+              ? (range) => {
+                  setSelectedDay(undefined)
+                  setCustomAnalyticsRange(range)
+                }
+              : undefined}
+            maxCustomEndDay={view === 'analytics' ? maxCustomEndDay : undefined}
             refreshing={refreshing}
             onRefresh={() => void onRefresh()}
             onExport={(f) => void onExport(f)}

@@ -21,20 +21,23 @@ import type {
   ProviderCost,
   QuotaSnapshot,
   RangeDays,
-  SessionRow
+  SessionRow,
+  UsageResolution
 } from '../../shared/types'
-import { AppSettingsSchema } from '../../shared/types'
+import { AppSettingsSchema, MAX_CUSTOM_ANALYTICS_DAYS } from '../../shared/types'
 import { buildBurnSeries } from '../analytics/burn'
 import { buildProjectionCard } from '../analytics/projections'
 import { pricingInfo } from '../pricing/store'
 import { fxInfo } from '../pricing/fx'
 import {
   addCalendarDays,
-  makeDayFormatter,
+  enumerateUsageBucketPoints,
+  makeUsageBucketFormatter,
   rangeStartMs,
   resolveAnalyticsPeriod,
   resolveTimeZone,
   startOfDayMs,
+  usageBucketStartMs,
   type AnalyticsPeriodSelection,
   type ResolvedAnalyticsWindow
 } from '../util/time'
@@ -459,13 +462,26 @@ export function getAnalyticsSnapshot(
 export function getDailyUsage(
   db: Database.Database,
   provider: ProviderFilter,
-  selection: PeriodSelection
+  selection: PeriodSelection,
+  resolution: UsageResolution = 'day'
 ): DailyUsagePoint[] {
   const settings = getSettings(db)
   const timezone = settings.timezone
   const enabled = enabledProviderIds(settings)
   const period = resolveSelectedPeriod(timezone, selection)
-  const dayOf = makeDayFormatter(timezone)
+  const bucketOf = makeUsageBucketFormatter(timezone, resolution)
+
+  if (period.current.days === null && resolution !== 'day') {
+    throw new RangeError('Lifetime usage charts support daily resolution only.')
+  }
+
+  // A fixed maximum keeps high-resolution chart payloads bounded. Preset
+  // ranges already top out at a year; apply the same contract to custom dates.
+  if (period.current.days !== null && period.current.days > MAX_CUSTOM_ANALYTICS_DAYS) {
+    throw new RangeError(
+      `Usage charts support custom ranges up to ${MAX_CUSTOM_ANALYTICS_DAYS} days.`
+    )
+  }
 
   const rows = db
     .prepare(
@@ -501,12 +517,13 @@ export function getDailyUsage(
 
   const grouped = new Map<string, DailyUsagePoint & { sessions: Set<string> }>()
   for (const row of rows) {
-    const day = dayOf(row.ts_ms)
+    const day = bucketOf(row.ts_ms)
     const key = `${day}\u0000${row.provider}`
     let current = grouped.get(key)
     if (!current) {
       current = {
         day,
+        bucket_start_ms: usageBucketStartMs(row.ts_ms, timezone, resolution),
         provider: row.provider,
         tokens_total: 0,
         uncached_input: 0,
@@ -538,6 +555,44 @@ export function getDailyUsage(
     current.sessions.add(row.session_id)
   }
 
+  const providers = Array.from(new Set(rows.map((row) => row.provider)))
+  if (period.current.startDay && period.current.endDay) {
+    // An in-progress hour is allowed to appear when it has a real event, but
+    // must never be manufactured as a zero before the hour completes.
+    const completedHourStart = usageBucketStartMs(Date.now(), timezone, 'hour')
+    for (const bucket of enumerateUsageBucketPoints(
+      period.current.startDay,
+      period.current.endDay,
+      timezone,
+      resolution,
+      resolution === 'hour' ? completedHourStart : undefined
+    )) {
+      for (const providerId of providers) {
+        const key = `${bucket.key}\u0000${providerId}`
+        if (!grouped.has(key)) {
+          grouped.set(key, {
+            day: bucket.key,
+            bucket_start_ms: bucket.startMs,
+            provider: providerId,
+            tokens_total: 0,
+            uncached_input: 0,
+            cached_input: 0,
+            cache_creation: 0,
+            output: 0,
+            reasoning: 0,
+            model_calls: 0,
+            session_count: 0,
+            api_equiv_usd: 0,
+            provider_cost_usd: 0,
+            cache_savings_usd: 0,
+            unpriced_calls: 0,
+            sessions: new Set<string>()
+          })
+        }
+      }
+    }
+  }
+
   return Array.from(grouped.values())
     .map(({ sessions, ...point }) => ({
       ...point,
@@ -548,7 +603,7 @@ export function getDailyUsage(
       provider_cost_usd: Math.round(point.provider_cost_usd * 1e6) / 1e6,
       cache_savings_usd: Math.round(point.cache_savings_usd * 1e6) / 1e6
     }))
-    .sort((a, b) => a.day.localeCompare(b.day))
+    .sort((a, b) => a.bucket_start_ms - b.bucket_start_ms || a.provider.localeCompare(b.provider))
 }
 
 export function getSessions(

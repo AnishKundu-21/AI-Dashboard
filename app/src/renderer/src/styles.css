@@ -716,6 +716,13 @@ table,
   margin-top: 2px;
 }
 
+.custom-range-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .card-head-actions {
   display: inline-flex;
   align-items: center;
@@ -826,6 +833,13 @@ table,
 .analytics-metric-select {
   width: auto;
   min-width: 156px;
+}
+
+.analytics-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .analytics-breakdown-section {

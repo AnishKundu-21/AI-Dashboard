@@ -15,7 +15,8 @@ import {
   ProviderIdSchema,
   QuotaSnapshotSchema,
   RangeDaysSchema,
-  SessionRowSchema
+  SessionRowSchema,
+  UsageResolutionSchema
 } from './types'
 
 /** Channel names used by main ↔ renderer via contextBridge */
@@ -52,6 +53,11 @@ export type GetOverviewInput = z.input<typeof GetOverviewInput>
 /** A resolved current/previous-period analytics snapshot. */
 export const GetAnalyticsSnapshotInput = ProviderPeriodInputSchema
 export type GetAnalyticsSnapshotInput = z.input<typeof GetAnalyticsSnapshotInput>
+
+export const GetDailyUsageInput = ProviderPeriodInputSchema.and(
+  z.object({ resolution: UsageResolutionSchema.default('day') })
+)
+export type GetDailyUsageInput = z.input<typeof GetDailyUsageInput>
 
 const SessionPeriodInputSchema = z
   .object({
@@ -105,7 +111,7 @@ export interface DashboardApi {
     input?: GetAnalyticsSnapshotInput
   ) => Promise<z.infer<typeof AnalyticsSnapshotSchema>>
   getQuotas: () => Promise<z.infer<typeof QuotaSnapshotSchema>[]>
-  getDailyUsage: (input?: GetOverviewInput) => Promise<z.infer<typeof DailyUsagePointSchema>[]>
+  getDailyUsage: (input?: GetDailyUsageInput) => Promise<z.infer<typeof DailyUsagePointSchema>[]>
   getBurn: (input: GetBurnInput) => Promise<z.infer<typeof BurnPointSchema>[]>
   getBurnSeries: (input?: GetBurnSeriesInput) => Promise<z.infer<typeof BurnSeriesSchema>[]>
   getModelMix: (input?: GetOverviewInput) => Promise<z.infer<typeof ModelMixItemSchema>[]>

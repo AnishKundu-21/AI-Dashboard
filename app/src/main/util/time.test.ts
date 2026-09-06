@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest'
 import {
   dayInZone,
   enumerateDays,
+  enumerateUsageBucketPoints,
+  enumerateUsageBuckets,
   makeDayFormatter,
+  makeUsageBucketFormatter,
   rangeStartMs,
   resolveAnalyticsPeriod,
   resolveTimeZone,
-  startOfDayMs
+  startOfDayMs,
+  usageBucketStartMs
 } from './time'
 
 describe('dayInZone', () => {
@@ -88,6 +92,57 @@ describe('resolveTimeZone', () => {
   })
 })
 
+describe('makeUsageBucketFormatter', () => {
+  it('groups hours, weeks, and months by local calendar time', () => {
+    const instant = Date.parse('2026-03-01T02:30:00.000Z')
+    expect(makeUsageBucketFormatter('America/New_York', 'hour')(instant)).toBe(
+      '2026-02-28 21:00 -05:00'
+    )
+    expect(makeUsageBucketFormatter('America/New_York', 'week')(instant)).toBe('2026-02-23')
+    expect(makeUsageBucketFormatter('America/New_York', 'month')(instant)).toBe('2026-02-01')
+  })
+
+  it('keeps both repeated fall-back hours distinct and enumerates 25 local hours', () => {
+    const hourOf = makeUsageBucketFormatter('America/New_York', 'hour')
+    expect(hourOf(Date.parse('2026-11-01T05:30:00.000Z'))).toBe('2026-11-01 01:00 -04:00')
+    expect(hourOf(Date.parse('2026-11-01T06:30:00.000Z'))).toBe('2026-11-01 01:00 -05:00')
+    expect(
+      enumerateUsageBuckets('2026-11-01', '2026-11-01', 'America/New_York', 'hour')
+    ).toHaveLength(25)
+  })
+
+  it('orders local-hour buckets by instant and respects a half-hour offset', () => {
+    const buckets = enumerateUsageBucketPoints(
+      '2026-11-01',
+      '2026-11-01',
+      'America/New_York',
+      'hour'
+    )
+    expect(buckets.map((bucket) => bucket.startMs)).toEqual(
+      [...buckets.map((bucket) => bucket.startMs)].sort((a, b) => a - b)
+    )
+    expect(usageBucketStartMs(Date.parse('2026-03-01T19:45:00.000Z'), 'Asia/Kathmandu', 'hour')).toBe(
+      Date.parse('2026-03-01T19:15:00.000Z')
+    )
+  })
+
+  it('uses the real bucket boundary through Lord Howe 30-minute DST changes', () => {
+    const zone = 'Australia/Lord_Howe'
+    const spring = Date.parse('2026-10-03T15:30:00.000Z')
+    const springNextHour = Date.parse('2026-10-03T16:00:00.000Z')
+    const fall = Date.parse('2026-04-04T15:00:00.000Z')
+    const fallNextHour = Date.parse('2026-04-04T15:30:00.000Z')
+    expect(usageBucketStartMs(spring, zone, 'hour')).toBe(spring)
+    expect(usageBucketStartMs(springNextHour, zone, 'hour')).toBe(springNextHour)
+    expect(usageBucketStartMs(fall, zone, 'hour')).toBe(fall)
+    expect(usageBucketStartMs(fallNextHour, zone, 'hour')).toBe(fallNextHour)
+
+    const buckets = enumerateUsageBucketPoints('2026-10-04', '2026-10-04', zone, 'hour')
+    const springNextKey = makeUsageBucketFormatter(zone, 'hour')(springNextHour)
+    expect(buckets.find((bucket) => bucket.key === springNextKey)?.startMs).toBe(springNextHour)
+  })
+})
+
 describe('enumerateDays', () => {
   it('includes both endpoints', () => {
     expect(enumerateDays('2026-02-27', '2026-03-02')).toEqual([
@@ -144,6 +199,16 @@ describe('resolveAnalyticsPeriod', () => {
       endMs: Date.parse('2026-03-07T05:00:00.000Z'),
       days: 3
     })
+  })
+
+  it('rejects custom windows that end after the current local day', () => {
+    expect(() =>
+      resolveAnalyticsPeriod(
+        { start_day: '2026-09-05', end_day: '2026-09-07' },
+        'UTC',
+        Date.parse('2026-09-06T10:00:00.000Z')
+      )
+    ).toThrow('cannot end after today')
   })
 
   it('does not invent a comparison for lifetime history', () => {

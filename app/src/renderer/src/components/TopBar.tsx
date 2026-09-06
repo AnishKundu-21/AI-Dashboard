@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ProviderId, RangeDays } from '@shared/types'
+import { MAX_CUSTOM_ANALYTICS_DAYS, type ProviderId, type RangeDays } from '@shared/types'
 import { providerMeta } from '@shared/providers'
 import { Segmented, type SegmentedOption } from './Segmented'
 import {
@@ -24,6 +24,23 @@ const RANGES: Array<{ value: RangeDays; label: string }> = [
   { value: 0, label: 'Lifetime' }
 ]
 
+function addCalendarDays(day: string, amount: number): string {
+  const date = new Date(`${day}T00:00:00.000Z`)
+  date.setUTCDate(date.getUTCDate() + amount)
+  return date.toISOString().slice(0, 10)
+}
+
+function earlierDay(...days: Array<string | undefined>): string | undefined {
+  return days.filter((day): day is string => Boolean(day)).sort()[0]
+}
+
+function calendarDayCount(start: string, end: string): number {
+  return Math.floor(
+    (Date.parse(`${end}T00:00:00.000Z`) - Date.parse(`${start}T00:00:00.000Z`)) /
+      86_400_000
+  ) + 1
+}
+
 interface Props {
   title: string
   provider: ProviderTab
@@ -33,6 +50,8 @@ interface Props {
   onRange: (d: RangeDays) => void
   customDateRange?: { start_day: string; end_day: string }
   onCustomDateRange?: (range: { start_day: string; end_day: string }) => void
+  /** Today's date in the configured usage timezone. */
+  maxCustomEndDay?: string
   refreshing: boolean
   onRefresh: () => void
   onExport: (format: 'csv' | 'json') => void
@@ -49,6 +68,7 @@ export function TopBar({
   onRange,
   customDateRange,
   onCustomDateRange,
+  maxCustomEndDay,
   refreshing,
   onRefresh,
   onExport,
@@ -130,6 +150,24 @@ export function TopBar({
       color: providerMeta(p).color
     }))
   ]
+  const maximumEnd = maxCustomEndDay ?? new Date().toISOString().slice(0, 10)
+  const maximumEndFromStart = customStart
+    ? earlierDay(maximumEnd, addCalendarDays(customStart, MAX_CUSTOM_ANALYTICS_DAYS - 1))
+    : maximumEnd
+  const maximumStart = earlierDay(customEnd, maximumEnd)
+  const span = customStart && customEnd ? calendarDayCount(customStart, customEnd) : 0
+  const customRangeInvalid =
+    !customStart ||
+    !customEnd ||
+    customStart > customEnd ||
+    customEnd > maximumEnd ||
+    span > MAX_CUSTOM_ANALYTICS_DAYS
+
+  const rangeHelp = customEnd > maximumEnd
+    ? `Choose a date no later than ${maximumEnd}.`
+    : span > MAX_CUSTOM_ANALYTICS_DAYS
+      ? `Custom analytics ranges are limited to ${MAX_CUSTOM_ANALYTICS_DAYS} days.`
+      : `Up to ${MAX_CUSTOM_ANALYTICS_DAYS} days, ending ${maximumEnd} or earlier.`
 
   return (
     <header className="topbar">
@@ -185,7 +223,7 @@ export function TopBar({
                 ref={customStartRef}
                 type="date"
                 value={customStart}
-                max={customEnd || undefined}
+                max={maximumStart}
                 onChange={(e) => setCustomStart(e.target.value)}
               />
             </label>
@@ -195,9 +233,11 @@ export function TopBar({
                 type="date"
                 value={customEnd}
                 min={customStart || undefined}
+                max={maximumEndFromStart}
                 onChange={(e) => setCustomEnd(e.target.value)}
               />
             </label>
+            <p className="custom-range-help" aria-live="polite">{rangeHelp}</p>
             <div className="custom-range-actions">
               <button type="button" className="btn ghost" onClick={closeCustom}>
                 Cancel
@@ -205,7 +245,7 @@ export function TopBar({
               <button
                 type="button"
                 className="btn primary"
-                disabled={!customStart || !customEnd || customStart > customEnd}
+                disabled={customRangeInvalid}
                 onClick={() => {
                   onCustomDateRange({ start_day: customStart, end_day: customEnd })
                   closeCustom()
