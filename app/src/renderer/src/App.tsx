@@ -21,7 +21,8 @@ import {
   providerMeta,
   providerIds
 } from '@shared/providers'
-import { QuotaCard } from './components/QuotaCard'
+import { AllowanceStrip, OverviewInsights } from './components/OverviewInsights'
+import { Appearance, CommandPalette } from './components/WorkspaceTools'
 import { DailyChart, type DailyMetric } from './components/DailyChart'
 import { BurnChart } from './components/BurnChart'
 import {
@@ -51,7 +52,7 @@ import {
   setFxRates
 } from './lib/format'
 import { compact } from './lib/chart'
-import { useCollapsedNav, useNow, useTheme } from './lib/hooks'
+import { useCollapsedNav, useDensity, useNow, useTheme } from './lib/hooks'
 
 function dayInUsageTimeZone(timezone: string | undefined, timestampMs: number): string {
   const timeZone = !timezone || timezone === 'system' ? undefined : timezone
@@ -77,13 +78,21 @@ export default function App() {
   // Shell -----------------------------------------------------------------
   const [view, setView] = useState<ViewId>('overview')
   const [theme, setTheme] = useTheme()
+  const [density, setDensity] = useDensity()
+  const [commandOpen, setCommandOpen] = useState(false)
   const [collapsed, setCollapsed] = useCollapsedNav()
   const [toasts, setToasts] = useState<ToastItem[]>([])
   const toastId = useRef(0)
 
   // Filters ---------------------------------------------------------------
-  const [provider, setProvider] = useState<ProviderTab>('all')
-  const [rangeDays, setRangeDays] = useState<RangeDays>(7)
+  const [provider, setProvider] = useState<ProviderTab>(() => {
+    const saved = window.localStorage.getItem('aiud.filter.provider')
+    return saved && providerIds().includes(saved) ? saved : 'all'
+  })
+  const [rangeDays, setRangeDays] = useState<RangeDays>(() => {
+    const saved = Number(window.localStorage.getItem('aiud.filter.range') ?? 7)
+    return [0, 1, 3, 5, 7, 30, 180, 365].includes(saved) ? saved as RangeDays : 7
+  })
   const [customAnalyticsRange, setCustomAnalyticsRange] = useState<
     { start_day: string; end_day: string } | undefined
   >()
@@ -126,11 +135,16 @@ export default function App() {
   const now = useNow(20_000)
   const maxCustomEndDay = dayInUsageTimeZone(settings?.timezone, now)
 
+  useEffect(() => {
+    window.localStorage.setItem('aiud.filter.provider', provider)
+    window.localStorage.setItem('aiud.filter.range', String(rangeDays))
+  }, [provider, rangeDays])
+
   const activePeriod = useMemo(
-    () => (view === 'analytics' && customAnalyticsRange
+    () => (customAnalyticsRange
       ? customAnalyticsRange
       : { range_days: rangeDays }),
-    [customAnalyticsRange, rangeDays, view]
+    [customAnalyticsRange, rangeDays]
   )
   const isLifetimeAnalytics =
     view === 'analytics' && 'range_days' in activePeriod && activePeriod.range_days === 0
@@ -141,12 +155,14 @@ export default function App() {
       provider,
       ...activePeriod,
       search: searchDebounced || undefined,
-      sort_by: 'started_at' as const,
+      day: selectedDay,
+      model: selectedModel,
+      sort_by: sessionSort,
       sort_dir: 'desc' as const,
       limit: 500,
       offset: 0
     }),
-    [activePeriod, provider, searchDebounced]
+    [activePeriod, provider, searchDebounced, selectedDay, selectedModel, sessionSort]
   )
 
   useEffect(() => {
@@ -268,8 +284,7 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        setView('sessions')
-        window.setTimeout(() => searchRef.current?.focus(), 60)
+        setCommandOpen((open) => !open)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -349,13 +364,17 @@ export default function App() {
 
   /** Per-day totals for the trend lines, ordered oldest → newest. */
   const series = useMemo(() => {
-    const days = Array.from(new Set(daily.map((d) => d.day))).sort()
-    const pick = (fn: (d: DailyUsagePoint) => number) =>
-      days.map((day) => daily.filter((d) => d.day === day).reduce((s, d) => s + fn(d), 0))
+    const byDay = new Map<string, { tokens: number; cost: number; sessions: number; savings: number }>()
+    for (const d of daily) {
+      const value = byDay.get(d.day) ?? { tokens: 0, cost: 0, sessions: 0, savings: 0 }
+      value.tokens += d.tokens_total; value.cost += d.api_equiv_usd
+      value.sessions += d.session_count; value.savings += d.cache_savings_usd
+      byDay.set(d.day, value)
+    }
+    const days = [...byDay].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value)
     return {
-      tokens: pick((d) => d.tokens_total),
-      cost: pick((d) => d.api_equiv_usd),
-      sessions: pick((d) => d.session_count)
+      tokens: days.map((d) => d.tokens), cost: days.map((d) => d.cost),
+      sessions: days.map((d) => d.sessions), savings: days.map((d) => d.savings)
     }
   }, [daily])
 
@@ -497,7 +516,7 @@ export default function App() {
     )
   }
 
-  if (error) {
+  if (error && !overview) {
     return (
       <div className="fatal">
         <IconWarning size={22} />
@@ -545,11 +564,11 @@ export default function App() {
     (analyticsPrevious?.unpriced_sessions ?? 0) > 0
 
   const overviewView = (
-    <div className="view">
+    <div className="view overview-view">
       <div className="context">
         <div className="context-item">
           <span>Window</span>
-          <strong>{rangeLabel(rangeDays)}</strong>
+          <strong>{customAnalyticsRange ? `${customAnalyticsRange.start_day} – ${customAnalyticsRange.end_day}` : rangeLabel(rangeDays)}</strong>
         </div>
         <div className="context-item">
           <span>Last sync</span>
@@ -580,6 +599,10 @@ export default function App() {
       </div>
 
       <AlertStack alerts={alerts} onDismiss={(id) => void dismiss(id)} />
+
+      <section className="section allowance-section"><div className="section-head"><div><h2>Your allowances</h2><p>Current provider windows · select for details</p></div><span className="status plain">Independent of date filter</span></div>
+        <AllowanceStrip quotas={visibleQuotas} locale={locale} timezone={settings?.timezone ?? 'system'} />
+      </section>
 
       {overview ? (
         <div className="metrics">
@@ -617,52 +640,21 @@ export default function App() {
           </StatCard>
 
           <StatCard
-            label="Avg quota used"
-            value={overview.avg_used_pct ?? 0}
-            format={(n) => (overview.avg_used_pct != null ? `${Math.round(n)}%` : '—')}
-            sub={
-              overview.avg_used_pct != null
-                ? 'Mean across providers reporting live figures'
-                : 'No live quota figures yet'
-            }
+            label="Cache savings"
+            value={overview.cache_savings_usd}
+            format={(n) => formatCurrency(n, currency, locale)}
+            sub="Estimated savings against full input prices"
           >
-            <QuotaMeters quotas={quotas} />
+            <Sparkline values={series.savings} />
           </StatCard>
         </div>
       ) : null}
 
-      <section className="section">
-        <div className="section-head">
-          <div>
-            <h2>Remaining quota</h2>
-            <p>
-              A provider is marked live only when its usage API returns real figures.
-              Percentages are never inferred.
-            </p>
-          </div>
-        </div>
-        {visibleQuotas.length === 0 ? (
-          <div className="panel empty">
-            <strong>No subscription quota for this filter</strong>
-            <p>
-              {provider !== 'all' && !providerMeta(provider).reportsQuota
-                ? `${providerMeta(provider).name} contributes local usage and cost, but does not expose a quota window.`
-                : 'Enable a quota-capable provider in Settings to show remaining limits.'}
-            </p>
-          </div>
-        ) : (
-          <div className="grid grid-3">
-            {visibleQuotas.map((q) => (
-              <QuotaCard
-                key={q.provider}
-                quota={q}
-                locale={locale}
-                timezone={settings?.timezone ?? 'system'}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      <OverviewInsights daily={daily} models={models} overview={overview} sessions={sessions} currency={currency} locale={locale}
+        timezone={settings?.timezone ?? 'system'} sessionSort={sessionSort} onSort={setSessionSort} onSessions={() => setView('sessions')}
+        onDay={(day) => { clearFilters(); setSelectedDay(day); setView('sessions') }}
+        onModel={(model) => { clearFilters(); setSelectedModel(model); setView('sessions') }}
+        onProject={(project) => { clearFilters(); setSearch(project); setView('sessions') }} />
 
       {overview && overview.by_provider.length > 0 ? (
         <section className="section">
@@ -775,7 +767,7 @@ export default function App() {
           locale={locale}
           selectedDay={chartResolution === 'day' ? selectedDay : undefined}
           onSelectDay={chartResolution === 'day'
-            ? (day) => setSelectedDay(day === selectedDay ? undefined : day)
+            ? (day) => { clearFilters(); setSelectedDay(day); setView('sessions') }
             : undefined}
         />
       </article>
@@ -830,7 +822,7 @@ export default function App() {
                 metric={analyticsMetric}
                 currency={currency}
                 locale={locale}
-                onSelectModel={(model) => setSelectedModel(model === selectedModel ? undefined : model)}
+                onSelectModel={(model) => { clearFilters(); setSelectedModel(model); setView('sessions') }}
               />
             </div>
           </article>
@@ -904,7 +896,7 @@ export default function App() {
             kind="model"
             currency={currency}
             locale={locale}
-            onSelectModel={(model) => setSelectedModel(model === selectedModel ? undefined : model)}
+            onSelectModel={(model) => { clearFilters(); setSelectedModel(model); setView('sessions') }}
           />
         </article>
       </div>
@@ -960,6 +952,7 @@ export default function App() {
           sessions={sessions}
           currency={currency}
           locale={locale}
+          timezone={settings?.timezone ?? 'system'}
           sort={sessionSort}
           onSort={setSessionSort}
         />
@@ -993,8 +986,8 @@ export default function App() {
           <div>
             <h2>Burn pace and runway</h2>
             <p>
-              Projected from usage observed in this window. These are estimates, not provider
-              commitments.
+              Estimates based on available quota history. Provider windows and forecasts
+              are independent of analytics dates.
             </p>
           </div>
         </div>
@@ -1024,7 +1017,7 @@ export default function App() {
         <div className="card-head">
           <div>
             <h3>Allowance burn detail</h3>
-            <p>Separate weekly, monthly, and model allowance snapshots with a dashed forecast beyond the last measurement</p>
+            <p>Quota history: {rangeLabel(rangeDays).toLowerCase()} · dashed forecasts extend beyond the last measurement</p>
           </div>
           <select
             className="select"
@@ -1120,6 +1113,7 @@ export default function App() {
 
   const settingsView = (
     <div className="view">
+      <Appearance theme={theme} onTheme={setTheme} density={density} onDensity={setDensity} />
       {settings ? (
         <SettingsPanel settings={settings} onChange={saveSettings} />
       ) : (
@@ -1163,6 +1157,7 @@ export default function App() {
           }}
           liveCount={liveCount}
           lastSync={relativeTime(lastSync, now)}
+          onCommand={() => setCommandOpen(true)}
         />
 
         <div className="main">
@@ -1177,14 +1172,12 @@ export default function App() {
               setSelectedDay(undefined)
               setRangeDays(days)
             }}
-            customDateRange={view === 'analytics' ? customAnalyticsRange : undefined}
-            onCustomDateRange={view === 'analytics'
-              ? (range) => {
+            customDateRange={customAnalyticsRange}
+            onCustomDateRange={(range) => {
                   setSelectedDay(undefined)
                   setCustomAnalyticsRange(range)
-                }
-              : undefined}
-            maxCustomEndDay={view === 'analytics' ? maxCustomEndDay : undefined}
+                }}
+            maxCustomEndDay={maxCustomEndDay}
             refreshing={refreshing}
             onRefresh={() => void onRefresh()}
             onExport={(f) => void onExport(f)}
@@ -1192,12 +1185,15 @@ export default function App() {
             onTheme={setTheme}
           />
           <main className="content" key={view}>
+            <div className="page-intro"><div><span className="eyebrow">YOUR AI WORKSPACE</span><h2>{view === 'overview' ? 'Every token. In perspective.' : meta.title}</h2><p>{VIEW_DESCRIPTIONS[view]}</p></div><span className="workspace-badge"><i />Local & private</span></div>
+            {error && <div className="refresh-error" role="status"><span>Could not update: {error}. Showing the last loaded data.</span><button className="btn" onClick={() => void load()}>Retry</button></div>}
             {body}
           </main>
         </div>
 
         <Toasts items={toasts} />
       </div>
+      {commandOpen && <CommandPalette onClose={() => setCommandOpen(false)} onView={setView} onRefresh={() => void onRefresh()} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} />}
       {settings && !settings.onboarding_completed ? (
         <Onboarding settings={settings} health={collectorHealth} onFinish={finishOnboarding} />
       ) : null}
@@ -1212,8 +1208,7 @@ function TokenSplit({ breakdown }: { breakdown: OverviewMetrics['token_breakdown
     { key: 'input', label: 'in', value: breakdown.uncached_input, color: 'var(--grok)' },
     { key: 'output', label: 'out', value: breakdown.output, color: 'var(--codex)' },
     { key: 'cache-read', label: 'cache read', value: breakdown.cached_input, color: 'var(--claude)' },
-    { key: 'cache-write', label: 'cache write', value: breakdown.cache_creation, color: 'var(--cursor)' },
-    { key: 'reasoning', label: 'reasoning', value: breakdown.reasoning, color: 'var(--border-2)' }
+    { key: 'cache-write', label: 'cache write', value: breakdown.cache_creation, color: 'var(--cursor)' }
   ].filter((p) => p.value > 0)
 
   const total = parts.reduce((s, p) => s + p.value, 0)
@@ -1292,33 +1287,6 @@ function periodTrend(
     text: `${delta > 0 ? '↑' : '↓'}${pct >= 10 ? Math.round(pct) : pct.toFixed(1)}% vs prior`,
     tone: delta > 0 ? 'up' : 'down'
   }
-}
-
-/** Per-provider used-% meters, so the average has context. */
-function QuotaMeters({ quotas }: { quotas: QuotaSnapshot[] }) {
-  const measured = quotas.filter((q) => q.used_pct != null)
-  if (measured.length === 0) return null
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-      {measured.map((q) => (
-        <div
-          key={q.provider}
-          className="compare-row"
-          style={{ ['--tone' as string]: providerMeta(q.provider).color, height: 14, gridTemplateColumns: '52px 1fr 34px' }}
-        >
-          <span className="label" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-            {providerMeta(q.provider).short}
-          </span>
-          <div className="meter">
-            <i style={{ width: `${Math.min(100, q.used_pct ?? 0)}%` }} />
-          </div>
-          <span className="value" style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-            {Math.round(q.used_pct ?? 0)}%
-          </span>
-        </div>
-      ))}
-    </div>
-  )
 }
 
 /** Grouped comparison bars: one group per measure, one row per provider. */
@@ -1400,10 +1368,19 @@ function Comparison({
 function Footer() {
   return (
     <footer className="footer">
-      <span>Quota read via CLI auth in the main process · metadata only, no prompt content</span>
-      <span>Electron · SQLite · local-first</span>
+      <span>Private by design · Your prompts and responses are never stored.</span>
+      <span>AI Usage Dashboard</span>
     </footer>
   )
+}
+
+const VIEW_DESCRIPTIONS: Record<ViewId, string> = {
+  overview: 'A clear view of your usage, capacity and the work behind it.',
+  analytics: 'Follow the trends. Understand what drives your usage.',
+  sessions: 'Explore the work behind the numbers, one session at a time.',
+  forecast: 'Understand your pace and plan around your next reset.',
+  health: 'Connection status and diagnostics for your local sources.',
+  settings: 'Make this workspace work for you.'
 }
 
 /**

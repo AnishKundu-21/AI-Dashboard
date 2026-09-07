@@ -1,7 +1,7 @@
 /** Renderer-only UI hooks: motion preferences, theme, animated counters, timers. */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent, RefObject } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from 'react'
 
 export type ThemeMode = 'dark' | 'light'
 
@@ -53,6 +53,16 @@ export function useCollapsedNav(): [boolean, (next: boolean) => void] {
   return [collapsed, setCollapsed]
 }
 
+export function useDensity() {
+  const [density, setDensity] = useState<'comfortable' | 'compact'>(() =>
+    window.localStorage.getItem('aiud.density') === 'compact' ? 'compact' : 'comfortable')
+  useLayoutEffect(() => {
+    document.documentElement.dataset.density = density
+    window.localStorage.setItem('aiud.density', density)
+  }, [density])
+  return [density, setDensity] as const
+}
+
 const easeOutExpo = (t: number) => (t === 1 ? 1 : 1 - Math.pow(2, -10 * t))
 
 /**
@@ -66,7 +76,7 @@ export function useCountUp(value: number, duration = 900): number {
   const frameRef = useRef(0)
 
   useEffect(() => {
-    if (reduced || duration <= 0) {
+    if (reduced || duration <= 0 || document.hidden) {
       fromRef.current = value
       setDisplay(value)
       return
@@ -79,6 +89,7 @@ export function useCountUp(value: number, duration = 900): number {
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / duration)
       const next = from + delta * easeOutExpo(t)
+      fromRef.current = next
       setDisplay(next)
       if (t < 1) {
         frameRef.current = requestAnimationFrame(tick)
@@ -107,8 +118,10 @@ export function useMountedFlag(delay = 0): boolean {
 export function useNow(intervalMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), intervalMs)
-    return () => window.clearInterval(id)
+    const tick = () => { if (!document.hidden) setNow(Date.now()) }
+    const id = window.setInterval(tick, intervalMs)
+    document.addEventListener('visibilitychange', tick)
+    return () => { window.clearInterval(id); document.removeEventListener('visibilitychange', tick) }
   }, [intervalMs])
   return now
 }
@@ -150,7 +163,7 @@ export interface HoverProbe {
  * Maps pointer position over a chart to the nearest slot index.
  * `padLeft`/`padRight` are in viewBox units and scaled to the rendered size.
  */
-export function useChartHover(count: number, viewW: number, padL: number, padR: number) {
+export function useChartHover(count: number, viewW: number, padL: number, padR: number, centeredBuckets = false) {
   const [probe, setProbe] = useState<HoverProbe>({ index: null, x: 0, y: 0 })
 
   const onMove = useCallback(
@@ -164,13 +177,26 @@ export function useChartHover(count: number, viewW: number, padL: number, padR: 
       const plotEnd = rect.width - padR * scale
       const clamped = Math.min(Math.max(px, plotStart), plotEnd)
       const t = (clamped - plotStart) / Math.max(plotEnd - plotStart, 1)
-      const index = Math.min(count - 1, Math.max(0, Math.round(t * (count - 1))))
-      setProbe({ index, x: px, y: e.clientY - rect.top })
+      const index = Math.min(count - 1, Math.max(0, centeredBuckets ? Math.floor(t * count) : Math.round(t * (count - 1))))
+      // Tooltips snap to a bucket: pointer movement within it needs no render.
+      setProbe((prev) => prev.index === index ? prev : { index, x: clamped, y: e.clientY - rect.top })
     },
-    [count, viewW, padL, padR]
+    [count, viewW, padL, padR, centeredBuckets]
   )
 
   const onLeave = useCallback(() => setProbe({ index: null, x: 0, y: 0 }), [])
 
-  return { probe, onMove, onLeave }
+  const onKeyDown = useCallback((e: ReactKeyboardEvent<SVGSVGElement>) => {
+    if (count === 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Escape'].includes(e.key)) return
+    e.preventDefault()
+    if (e.key === 'Escape') { onLeave(); return }
+    setProbe((prev) => {
+      const index = e.key === 'Home' ? 0 : e.key === 'End' ? count - 1
+        : Math.max(0, Math.min(count - 1, (prev.index ?? -1) + (e.key === 'ArrowLeft' ? -1 : 1)))
+      const position = centeredBuckets ? (index + 0.5) / count : index / Math.max(1, count - 1)
+      return { index, x: padL + position * (viewW - padL - padR), y: 0 }
+    })
+  }, [count, viewW, padL, padR, onLeave, centeredBuckets])
+
+  return { probe, onMove, onLeave, onKeyDown }
 }

@@ -47,7 +47,7 @@ export function BurnChart({ series }: Props) {
     return { entry, obsPts, projPts: bridged, obsLen: pathLength(obsPts) }
   })
 
-  const { probe, onMove, onLeave } = useChartHover(days.length, W, PAD.l, PAD.r)
+  const { probe, onMove, onLeave, onKeyDown } = useChartHover(days.length, W, PAD.l, PAD.r)
   const activeDay = probe.index == null ? undefined : days[probe.index]
 
   if (visibleSeries.length === 0 || days.length === 0) {
@@ -89,10 +89,14 @@ export function BurnChart({ series }: Props) {
           height={H}
           viewBox={`0 0 ${W} ${H}`}
           role="img"
-          aria-label="Quota allowance burn and projection by provider"
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+          onBlur={onLeave}
+          aria-label="Quota allowance burn and projection by provider. Use arrow keys to explore."
           onPointerMove={onMove}
           onPointerLeave={onLeave}
         >
+          <line x1={PAD.l} x2={W - PAD.r} y1={yFor(100)} y2={yFor(100)} stroke="var(--warn)" strokeDasharray="4 5" opacity={0.6} />
           {[0, 25, 50, 75, 100].map((tick) => (
             <g key={tick}>
               <line className="chart-grid-line" x1={PAD.l} x2={W - PAD.r} y1={yFor(tick)} y2={yFor(tick)} />
@@ -114,7 +118,7 @@ export function BurnChart({ series }: Props) {
                 high: yFor(point.upper_used_pct ?? point.used_pct)
               }))
             const confidenceBand = rangePoints.length > 1
-              ? `${rangePoints.map((point) => `${point.x},${point.high}`).join(' L')} L ${[...rangePoints]
+              ? `M${rangePoints.map((point) => `${point.x},${point.high}`).join(' L')} L ${[...rangePoints]
                 .reverse()
                 .map((point) => `${point.x},${point.low}`)
                 .join(' L')} Z`

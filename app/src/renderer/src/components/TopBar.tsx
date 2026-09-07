@@ -294,7 +294,7 @@ export function TopBar({
                 <IconDownload size={14} />
                 Export JSON
               </button>
-              <p className="menu-note">Respects the current provider and range filters.</p>
+              <p className="menu-note">Exports the selected provider, dates, day, model and search filters.</p>
             </div>
           ) : null}
         </div>

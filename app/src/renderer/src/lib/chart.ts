@@ -53,8 +53,11 @@ export function smoothPath(points: Pt[], tension = 0.32): string {
     const p1 = points[i]
     const p2 = points[i + 1]
     const p3 = points[i + 2] ?? p2
-    const c1 = { x: p1.x + ((p2.x - p0.x) / 6) * tension * 2, y: p1.y + ((p2.y - p0.y) / 6) * tension * 2 }
-    const c2 = { x: p2.x - ((p3.x - p1.x) / 6) * tension * 2, y: p2.y - ((p3.y - p1.y) / 6) * tension * 2 }
+    // Keep control points within each segment's endpoints. Sharp usage spikes
+    // must not produce negative values or imply an unobserved peak.
+    const clampY = (y: number) => Math.max(Math.min(p1.y, p2.y), Math.min(Math.max(p1.y, p2.y), y))
+    const c1 = { x: p1.x + ((p2.x - p0.x) / 6) * tension * 2, y: clampY(p1.y + ((p2.y - p0.y) / 6) * tension * 2) }
+    const c2 = { x: p2.x - ((p3.x - p1.x) / 6) * tension * 2, y: clampY(p2.y - ((p3.y - p1.y) / 6) * tension * 2) }
     d += ` C${round(c1.x)},${round(c1.y)} ${round(c2.x)},${round(c2.y)} ${round(p2.x)},${round(p2.y)}`
   }
   return d

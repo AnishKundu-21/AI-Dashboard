@@ -35,6 +35,7 @@ interface Props {
   counts: Partial<Record<ViewId, { value: number; hot?: boolean }>>
   liveCount: number
   lastSync: string
+  onCommand: () => void
 }
 
 export function SideNav({
@@ -44,14 +45,17 @@ export function SideNav({
   onToggleCollapsed,
   counts,
   liveCount,
-  lastSync
+  lastSync,
+  onCommand
 }: Props) {
   return (
     <nav className="sidenav" aria-label="Primary">
       <div className="brand">
-        <span className="brand-mark">AI</span>
+        <span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22" fill="none"><path d="M4 16V10M9 19V5M14 16V8M19 13V3" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg></span>
         <span className="brand-text">Usage Dashboard</span>
       </div>
+
+      <button className="nav-command" onClick={onCommand} aria-label="Open quick actions"><span>Quick actions</span><kbd>Ctrl K</kbd></button>
 
       {(['monitor', 'system'] as const).map((group) => (
         <div className="nav-group" key={group}>
@@ -65,7 +69,8 @@ export function SideNav({
                 type="button"
                 className={`nav-item${view === v.id ? ' active' : ''}`}
                 onClick={() => onView(v.id)}
-                title={collapsed ? v.label : undefined}
+                title={v.label}
+                aria-label={v.label}
                 aria-current={view === v.id ? 'page' : undefined}
               >
                 <Icon size={15} />

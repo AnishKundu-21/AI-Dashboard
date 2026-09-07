@@ -1,6 +1,8 @@
 import type { SessionRow } from '@shared/types'
+import { useState } from 'react'
+import { Modal } from './Modal'
 import { providerMeta } from '@shared/providers'
-import { formatCurrency, formatDuration, formatTokens, relativeTime } from '../lib/format'
+import { formatCurrency, formatDuration, formatResetAt, formatTokens, relativeTime } from '../lib/format'
 
 export type SessionSort = 'started_at' | 'tokens_total' | 'api_equiv_usd' | 'duration_ms'
 
@@ -8,6 +10,7 @@ interface Props {
   sessions: SessionRow[]
   currency: string
   locale: string
+  timezone?: string
   sort: SessionSort
   onSort: (next: SessionSort) => void
 }
@@ -28,7 +31,8 @@ const COLUMNS: Array<{ key: string; label: string; num?: boolean; sort?: Session
   { key: 'duration', label: 'Duration', num: true, sort: 'duration_ms' }
 ]
 
-export function SessionsTable({ sessions, currency, locale, sort, onSort }: Props) {
+export function SessionsTable({ sessions, currency, locale, timezone = 'system', sort, onSort }: Props) {
+  const [selected, setSelected] = useState<SessionRow | null>(null)
   if (sessions.length === 0) {
     return (
       <div className="empty">
@@ -39,7 +43,7 @@ export function SessionsTable({ sessions, currency, locale, sort, onSort }: Prop
   }
 
   return (
-    <div className="table-wrap">
+    <><div className="table-wrap">
       <table>
         <thead>
           <tr>
@@ -47,10 +51,10 @@ export function SessionsTable({ sessions, currency, locale, sort, onSort }: Prop
               <th
                 key={c.key}
                 className={`${c.num ? 'num' : ''}${c.sort ? ' sortable' : ''}`}
-                onClick={c.sort ? () => onSort(c.sort!) : undefined}
+                aria-sort={c.sort && sort === c.sort ? 'descending' : undefined}
                 title={c.sort ? `Sort by ${c.label.toLowerCase()}` : undefined}
               >
-                {c.label}
+                {c.sort ? <button className="sort-button" onClick={() => onSort(c.sort!)}>{c.label}</button> : c.label}
                 {c.sort && sort === c.sort ? <span className="caret">↓</span> : null}
               </th>
             ))}
@@ -66,9 +70,9 @@ export function SessionsTable({ sessions, currency, locale, sort, onSort }: Prop
                 </span>
               </td>
               <td>
-                <span className="cell-project" title={s.project}>
+                <button className="cell-project session-open" title={`Inspect ${s.project}`} onClick={() => setSelected(s)}>
                   {s.project}
-                </span>
+                </button>
               </td>
               <td>
                 <span className="cell-model" title={s.model}>
@@ -98,6 +102,27 @@ export function SessionsTable({ sessions, currency, locale, sort, onSort }: Prop
         </tbody>
       </table>
     </div>
+    {selected && <Modal title="Session details" onClose={() => setSelected(null)} drawer>
+      <div className="session-detail">
+        <span className="eyebrow">{providerMeta(selected.provider).name} · {selected.status.replace('_', ' ')}</span>
+        <h3>{selected.project}</h3><p>{selected.model}</p>
+        <div className="session-total">{tok(selected.tokens_total)}<span>total tokens</span></div>
+        <dl>{[
+          ['Uncached input', tok(selected.tokens?.uncached_input ?? selected.tokens_in)],
+          ['Cache reads', tok(selected.tokens?.cached_input ?? selected.tokens_cached ?? null)],
+          ['Cache writes', tok(selected.tokens?.cache_creation ?? null)],
+          ['Output', tok(selected.tokens?.output ?? selected.tokens_out)],
+          ['Reasoning (included in output)', tok(selected.tokens?.reasoning ?? selected.tokens_reasoning ?? null)],
+          ['Model calls', selected.model_calls?.toLocaleString() ?? '—'],
+          ['Duration', formatDuration(selected.duration_ms)],
+          ['Started', formatResetAt(selected.started_at, locale, timezone)],
+          ['API-equivalent cost', selected.api_equiv_usd == null ? 'Unpriced / unavailable' : formatCurrency(selected.api_equiv_usd, currency, locale)],
+          ['Provider-reported cost', selected.provider_cost_usd == null ? 'Unavailable' : formatCurrency(selected.provider_cost_usd, currency, locale)],
+          ['Cache savings', selected.cache_savings_usd == null ? 'Unavailable' : formatCurrency(selected.cache_savings_usd, currency, locale)]
+        ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        <p className="dialog-note">API-equivalent cost is a comparison estimate, not your subscription invoice. Only session metadata is shown.</p>
+      </div>
+    </Modal>}</>
   )
 }
 

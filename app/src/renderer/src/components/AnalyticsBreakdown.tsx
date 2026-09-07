@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type { ModelMixItem, ModelUsagePoint, ProviderCost, UsageResolution } from '@shared/types'
 import { providerMeta } from '@shared/providers'
-import { areaPath, compact, linePath, niceMax, smoothPath, tickValues, type Pt } from '../lib/chart'
+import { compact, linePath, niceMax, smoothPath, tickValues, type Pt } from '../lib/chart'
 import { formatCurrency, formatTokens } from '../lib/format'
 import { useChartHover, useElementWidth, usePrefersReducedMotion } from '../lib/hooks'
 import { Segmented, type SegmentedOption } from './Segmented'
@@ -132,7 +132,7 @@ export function ModelUsageChart({
     return { buckets: bucketList, series: ranked, values: valueMap, max: chartMax }
   }, [metric, modelFilter, rows])
 
-  const { probe, onMove, onLeave } = useChartHover(buckets.length, W, pad.l, pad.r)
+  const { probe, onMove, onLeave, onKeyDown } = useChartHover(buckets.length, W, pad.l, pad.r)
   const xFor = (index: number) =>
     pad.l + (index / Math.max(buckets.length - 1, 1)) * plotW
   const yFor = (value: number) => pad.t + plotH * (1 - value / max)
@@ -179,6 +179,9 @@ export function ModelUsageChart({
           role="img"
           aria-label={`Usage over time by model at ${resolution} resolution`}
           onPointerMove={onMove}
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+          onBlur={onLeave}
           onPointerLeave={onLeave}
         >
           {tickValues(max, 4).map((tick) => (
@@ -270,108 +273,26 @@ export function AnalyticsRankChart({
   locale: string
   onSelectModel?: (model: string) => void
 }) {
-  const reduced = usePrefersReducedMotion()
-  const [wrapRef, wrapWidth] = useElementWidth<HTMLDivElement>(620)
-  const [hovered, setHovered] = useState<number | null>(null)
-  const ranked = [...rows]
+  const ranked = useMemo(() => [...rows]
     .filter((row) => valueOf(row, metric) > 0)
-    .sort((a, b) => valueOf(b, metric) - valueOf(a, metric))
-  const max = Math.max(...ranked.map((row) => valueOf(row, metric)), 1e-9)
-
-  if (ranked.length === 0) {
-    return (
-      <div className="empty compact-empty">
-        <strong>No data for this metric</strong>
-        <p>Try another metric, provider, or date range.</p>
-      </div>
-    )
-  }
-
-  const W = Math.max(260, Math.round(wrapWidth))
-  const H = 212
-  const pad = { l: W < 440 ? 38 : 54, r: 16, t: 18, b: 42 }
-  const plotW = W - pad.l - pad.r
-  const plotH = H - pad.t - pad.b
-  const xFor = (index: number) =>
-    ranked.length === 1 ? pad.l + plotW / 2 : pad.l + (index / (ranked.length - 1)) * plotW
-  const chartMax = niceMax(max)
-  const yFor = (value: number) => pad.t + plotH * (1 - value / chartMax)
-  const points: Pt[] = ranked.map((row, index) => ({
-    x: xFor(index),
-    y: yFor(valueOf(row, metric))
-  }))
-  const labelStep = Math.max(1, Math.ceil(ranked.length / Math.max(3, Math.floor(plotW / 92))))
-  const active = hovered == null ? null : ranked[hovered]
-
-  return (
-    <div className="rank-chart" ref={wrapRef} onPointerLeave={() => setHovered(null)}>
-      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${kind} comparison line chart`}>
-        <defs>
-          <linearGradient id={`rank-fill-${kind}`} x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.16" />
-            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        {tickValues(chartMax, 4).map((tick) => (
-          <g key={tick}>
-            <line className="chart-grid-line" x1={pad.l} x2={W - pad.r} y1={yFor(tick)} y2={yFor(tick)} />
-            <text x={pad.l - 9} y={yFor(tick) + 3.5} textAnchor="end">
-              {isMoney(metric) ? formatCurrency(tick, currency, locale) : compact(tick)}
-            </text>
-          </g>
-        ))}
-        {points.length > 1 ? (
-          <path d={areaPath(points, yFor(0))} fill={`url(#rank-fill-${kind})`} />
-        ) : null}
-        {points.length > 1 ? (
-          <path
-            className="chart-line rank-line"
-            d={smoothPath(points)}
-            stroke="var(--accent)"
-            strokeWidth={1.75}
-            style={reduced ? { animation: 'none' } : undefined}
-          />
-        ) : null}
-        {ranked.map((row, index) => {
-          const model = 'model' in row ? row.model : null
-          const label = model ?? providerMeta(row.provider).short
-          const point = points[index]
-          const showLabel = ranked.length <= 6 || index % labelStep === 0 || index === ranked.length - 1
-          return (
-            <g
-              key={`${row.provider}:${label}`}
-              className={model ? 'rank-point selectable' : 'rank-point'}
-              onPointerEnter={() => setHovered(index)}
-              onClick={() => model && onSelectModel?.(model)}
-            >
-              <title>{`${model ?? providerMeta(row.provider).name}: ${formatValue(valueOf(row, metric), metric, currency, locale)}`}</title>
-              <circle cx={point.x} cy={point.y} r={hovered === index ? 5 : 3.75} fill={providerMeta(row.provider).color} stroke="var(--surface)" strokeWidth={2} />
-              <circle cx={point.x} cy={point.y} r={11} fill="transparent" />
-              {showLabel ? (
-                <text x={point.x} y={H - 13} textAnchor="middle">
-                  {label.length > 15 ? `${label.slice(0, 13)}…` : label}
-                </text>
-              ) : null}
-            </g>
-          )
-        })}
-        <line className="chart-axis-line" x1={pad.l} x2={W - pad.r} y1={yFor(0)} y2={yFor(0)} />
-      </svg>
-      {active ? (
-        <div
-          className="chart-tooltip rank-tooltip"
-          style={{ left: points[hovered ?? 0].x, top: Math.max(8, points[hovered ?? 0].y - 10) }}
-        >
-          <div className="tt-title">{'model' in active ? String(active.model) : providerMeta(active.provider).name}</div>
-          <div className="tt-row">
-            <i style={{ background: providerMeta(active.provider).color }} />
-            {providerMeta(active.provider).short}
-            <b>{formatValue(valueOf(active, metric), metric, currency, locale)}</b>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
+    .sort((a, b) => valueOf(b, metric) - valueOf(a, metric)), [rows, metric])
+  const max = Math.max(...ranked.map((row) => valueOf(row, metric)), 1)
+  const total = ranked.reduce((sum, row) => sum + valueOf(row, metric), 0)
+  if (!ranked.length) return <div className="empty compact-empty"><strong>No data for this metric</strong><p>Try another metric, provider, or date range.</p></div>
+  return <div className="insight-ranks analytics-ranks" aria-label={`${kind} comparison bars`}>
+    {ranked.map((row, index) => {
+      const model = 'model' in row ? row.model : null
+      const value = valueOf(row, metric)
+      const label = model ?? providerMeta(row.provider).name
+      const content = <><span className="rank-index">{String(index + 1).padStart(2, '0')}</span>
+        <span className="insight-rank-main"><span><strong title={label}>{label}</strong><small>{formatValue(value, metric, currency, locale)}</small></span>
+          <i className="rank-track"><i style={{ width: `${value / max * 100}%`, background: providerMeta(row.provider).color }} /></i>
+        </span><span className="rank-share">{Math.round(value / total * 100)}%</span></>
+      return model && onSelectModel
+        ? <button key={`${row.provider}:${label}`} onClick={() => onSelectModel(model)}>{content}</button>
+        : <div className="rank-static" key={`${row.provider}:${label}`}>{content}</div>
+    })}
+  </div>
 }
 
 export function AnalyticsTable({

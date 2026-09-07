@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client'
 import '@fontsource-variable/inter'
 import App from './App'
 import './styles.css'
+import './workspace.css'
 
 // Applied before first paint so the shell never flashes the wrong theme.
 const stored = window.localStorage.getItem('aiud.theme')

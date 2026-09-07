@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
+import { Modal } from './Modal'
 import type { DailyUsagePoint, UsageResolution } from '@shared/types'
 import { providerMeta, providerIds, type ProviderId } from '@shared/providers'
 import {
@@ -37,9 +38,10 @@ interface Props {
   onSelectDay?: (day: string) => void
   currency: string
   locale: string
+  expanded?: boolean
 }
 
-const H = 220
+const H = 280
 
 /** Axis gutters shrink on narrow cards so the plot keeps usable width. */
 function padsFor(width: number) {
@@ -55,8 +57,13 @@ export function DailyChart({
   selectedDay,
   onSelectDay,
   currency,
-  locale
+  locale,
+  expanded = false
 }: Props) {
+  const id = useId().replace(/:/g, '')
+  const [mode, setMode] = useState<'line' | 'bar' | 'table'>('line')
+  const [percent, setPercent] = useState(false)
+  const [open, setOpen] = useState(false)
   const reduced = usePrefersReducedMotion()
   const [wrapRef, wrapWidth] = useElementWidth<HTMLDivElement>(760)
   const [hidden, setHidden] = useState<Set<ProviderId>>(new Set())
@@ -66,7 +73,7 @@ export function DailyChart({
   const plotW = W - PAD.l - PAD.r
   const plotH = H - PAD.t - PAD.b
 
-  const { days, providers, cell, max, totals } = useMemo(() => {
+  const { days, providers, cell, max, lineMax, totals } = useMemo(() => {
     const read = (d: DailyUsagePoint) => {
       switch (metric) {
         case 'input': return d.uncached_input
@@ -101,12 +108,13 @@ export function DailyChart({
       providers: present,
       cell: map,
       max: niceMax(Math.max(...sums, 0)),
+      lineMax: niceMax(Math.max(0, ...dayList.flatMap((day) => shown.map((p) => map.get(`${day}:${p}`) ?? 0)))),
       totals: sums
     }
   }, [data, metric, hidden])
 
   const visible = providers.filter((p) => !hidden.has(p))
-  const { probe, onMove, onLeave } = useChartHover(days.length, W, PAD.l, PAD.r)
+  const { probe, onMove, onLeave, onKeyDown } = useChartHover(days.length, W, PAD.l, PAD.r, mode === 'bar')
 
   const moneyMetric = metric === 'cost' || metric === 'provider-cost' || metric === 'savings'
   const compactHourly = resolution === 'hour'
@@ -139,12 +147,20 @@ export function DailyChart({
   // The final tick is only worth drawing if it clears the previous one.
   const lastStepped = Math.floor((days.length - 1) / labelStep) * labelStep
   const showFinal = (days.length - 1 - lastStepped) * (plotW / days.length) >= 42
-  const yFor = (v: number) => PAD.t + plotH * (1 - v / max)
-  const xFor = (i: number) => PAD.l + (i / Math.max(days.length - 1, 1)) * plotW
+  const chartMax = percent ? 100 : mode === 'bar' ? max : lineMax
+  const yFor = (v: number) => PAD.t + plotH * (1 - v / chartMax)
+  const xFor = (i: number) => mode === 'bar' ? PAD.l + (i + 0.5) / days.length * plotW : PAD.l + (i / Math.max(days.length - 1, 1)) * plotW
+  const displayValue = (day: string, p: string, i: number) => {
+    const value = cell.get(`${day}:${p}`) ?? 0
+    return percent ? (totals[i] ? value / totals[i] * 100 : 0) : value
+  }
   const hover = probe.index != null ? days[probe.index] : undefined
 
   return (
     <>
+      <div className="chart-toolbar"><div className="chart-view-options" aria-label="Chart display">
+        {(['line', 'bar', 'table'] as const).map((value) => <button key={value} aria-pressed={mode === value} onClick={() => setMode(value)}>{value === 'line' ? 'Trend' : value === 'bar' ? 'Stacked bars' : 'Data table'}</button>)}
+      </div><div className="chart-view-options"><button aria-pressed={percent} onClick={() => setPercent(!percent)}>Share %</button>{!expanded && <button onClick={() => setOpen(true)} aria-label="Expand usage chart">Expand ↗</button>}</div></div>
       <div className="chart-legend" style={{ padding: '10px 12px 0' }}>
         {providers.map((p) => {
           const off = hidden.has(p)
@@ -153,6 +169,7 @@ export function DailyChart({
               key={p}
               type="button"
               className={`legend-item${off ? ' off' : ''}`}
+              aria-pressed={!off}
               onClick={() =>
                 setHidden((prev) => {
                   const next = new Set(prev)
@@ -169,24 +186,28 @@ export function DailyChart({
         })}
       </div>
 
-      <div className="chart-shell" ref={wrapRef}>
+      <div className="chart-shell" ref={wrapRef} hidden={mode === 'table'}>
         <svg
           className="chart-svg"
           width={W}
           height={H}
           viewBox={`0 0 ${W} ${H}`}
           role="img"
-          aria-label={`${resolution} usage by provider`}
+          tabIndex={0}
+          aria-label={`${resolution} usage by provider. Arrow keys explore; Enter selects a day.`}
+          onKeyDown={(e) => { onKeyDown(e); if (e.key === 'Enter' && hover) onSelectDay?.(hover) }}
+          onBlur={onLeave}
           onPointerMove={onMove}
           onPointerLeave={onLeave}
           onClick={() => hover && onSelectDay?.(hover)}
           style={{ cursor: hover && onSelectDay ? 'pointer' : undefined }}
         >
-          {tickValues(max, 4).map((t) => (
+          <defs>{providers.map((p) => <linearGradient key={p} id={`${id}-${p}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={providerMeta(p).color} stopOpacity="0.22" /><stop offset="100%" stopColor={providerMeta(p).color} stopOpacity="0.015" /></linearGradient>)}</defs>
+          {tickValues(chartMax, 4).map((t) => (
             <g key={t}>
               <line className="chart-grid-line" x1={PAD.l} x2={W - PAD.r} y1={yFor(t)} y2={yFor(t)} />
               <text x={PAD.l - 10} y={yFor(t) + 3.5} textAnchor="end">
-                {moneyMetric && t > 0 ? formatCurrency(t, currency, locale) : compact(t)}
+                {percent ? `${t}%` : moneyMetric && t > 0 ? formatCurrency(t, currency, locale) : compact(t)}
               </text>
             </g>
           ))}
@@ -213,10 +234,19 @@ export function DailyChart({
             />
           ) : null}
 
-          {visible.map((p, pi) => {
+          {mode === 'bar' && days.map((day, i) => {
+            let base = 0
+            const width = Math.max(1, Math.min(38, plotW / days.length * 0.62))
+            return <g key={day}>{visible.map((p) => {
+              const value = displayValue(day, p, i)
+              const bottom = base; base += value
+              return <rect className="chart-bar" key={p} x={xFor(i) - width / 2} y={yFor(base)} width={width} height={Math.max(0, yFor(bottom) - yFor(base))} fill={providerMeta(p).color} rx={Math.min(3, width / 4)} opacity={0.85} />
+            })}</g>
+          })}
+          {mode === 'line' && visible.map((p, pi) => {
             const pts: Pt[] = days.map((day, i) => ({
               x: xFor(i),
-              y: yFor(cell.get(`${day}:${p}`) ?? 0)
+              y: yFor(displayValue(day, p, i))
             }))
             const len = compactHourly ? 0 : pathLength(pts)
             return (
@@ -225,8 +255,7 @@ export function DailyChart({
                   <path
                     className="chart-area"
                     d={areaPath(pts, yFor(0))}
-                    fill={providerMeta(p).color}
-                    opacity={0.035}
+                    fill={`url(#${id}-${p})`}
                   />
                 ) : null}
                 {pts.length > 1 ? (
@@ -242,7 +271,7 @@ export function DailyChart({
                     }}
                   />
                 ) : null}
-                {!compactHourly && pts.map((point, index) => {
+                {!compactHourly && pts.length <= 60 && pts.map((point, index) => {
                   const value = cell.get(`${days[index]}:${p}`) ?? 0
                   if (value <= 0) return null
                   return (
@@ -260,7 +289,7 @@ export function DailyChart({
                 {hover ? (
                   <circle
                     cx={xFor(probe.index ?? 0)}
-                    cy={yFor(cell.get(`${hover}:${p}`) ?? 0)}
+                    cy={yFor(displayValue(hover, p, probe.index ?? 0))}
                     r={3.25}
                     fill="var(--surface)"
                     stroke={providerMeta(p).color}
@@ -286,13 +315,13 @@ export function DailyChart({
           })}
         </svg>
 
-        {hover ? (
+        {hover && mode !== 'table' ? (
           <div
             className="chart-tooltip"
             style={{
-              left: Math.min(Math.max(probe.x, Math.min(92, W / 2)), W - Math.min(92, W / 2)),
+              left: Math.min(Math.max(probe.x, Math.min(120, W / 2)), W - Math.min(120, W / 2)),
               top: PAD.t + 4,
-              maxWidth: Math.max(140, W - 16)
+              width: Math.min(224, W - 16), maxWidth: W - 16
             }}
           >
             <div className="tt-title">{bucketLabel(hover, true)}</div>
@@ -303,7 +332,7 @@ export function DailyChart({
                 <div className="tt-row" key={p}>
                   <i style={{ background: providerMeta(p).color }} />
                   {providerMeta(p).short}
-                  <b>{fmt(v)}</b>
+                  <b>{percent ? `${displayValue(hover, p, probe.index ?? 0).toFixed(1)}%` : fmt(v)}</b>
                 </div>
               )
             })}
@@ -314,6 +343,9 @@ export function DailyChart({
           </div>
         ) : null}
       </div>
+      {mode === 'table' && <div className="table-wrap chart-data-table"><table><caption>Usage by {resolution} · {percent ? 'share of visible providers' : metric}</caption><thead><tr><th>Period</th>{visible.map((p) => <th key={p}>{providerMeta(p).short}</th>)}<th>Total</th></tr></thead><tbody>{days.map((day, i) => <tr key={day}><td>{onSelectDay ? <button className="table-link" onClick={() => onSelectDay(day)}>{bucketLabel(day, true)}</button> : bucketLabel(day, true)}</td>{visible.map((p) => <td key={p}>{percent ? `${displayValue(day, p, i).toFixed(1)}%` : fmt(cell.get(`${day}:${p}`) ?? 0)}</td>)}<td>{fmt(totals[i])}</td></tr>)}</tbody></table></div>}
+      <div className="chart-footnote">{percent ? 'Percent of visible series. Tooltip totals remain absolute.' : 'Hover or use arrow keys to explore.'} {onSelectDay ? 'Enter or click to inspect sessions.' : ''}</div>
+      {open && <Modal title="Usage explorer" onClose={() => setOpen(false)}><DailyChart data={data} metric={metric} resolution={resolution} currency={currency} locale={locale} selectedDay={selectedDay} onSelectDay={onSelectDay ? (day) => { setOpen(false); onSelectDay(day) } : undefined} expanded /></Modal>}
     </>
   )
 }
