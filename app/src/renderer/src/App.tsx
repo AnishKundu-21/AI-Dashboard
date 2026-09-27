@@ -132,6 +132,9 @@ export default function App() {
   const [collectorHealth, setCollectorHealth] = useState<CollectorHealth[]>([])
 
   const searchRef = useRef<HTMLInputElement>(null)
+  const loadSnapshotRef = useRef<() => Promise<void>>(async () => undefined)
+  const loadRunningRef = useRef(false)
+  const loadQueuedRef = useRef(false)
   const now = useNow(20_000)
   const maxCustomEndDay = dayInUsageTimeZone(settings?.timezone, now)
 
@@ -189,7 +192,7 @@ export default function App() {
     window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 2800)
   }, [])
 
-  const load = useCallback(async () => {
+  const loadSnapshot = useCallback(async () => {
     if (!window.api) {
       setError('window.api missing — run inside Electron (npm run dev)')
       setLoading(false)
@@ -248,9 +251,31 @@ export default function App() {
     }
   }, [activePeriod, chartResolution, provider, searchDebounced, selectedDay, selectedModel, sessionSort, sessionLimit, view])
 
+  loadSnapshotRef.current = loadSnapshot
+
+  // Collector file watchers can emit several changes for one logical write
+  // (notably SQLite's db/wal/shm files). Keep at most one renderer snapshot
+  // request in flight and collapse the burst into one follow-up using the
+  // latest filters instead of racing several full dashboard reloads.
+  const load = useCallback(async () => {
+    if (loadRunningRef.current) {
+      loadQueuedRef.current = true
+      return
+    }
+    loadRunningRef.current = true
+    try {
+      do {
+        loadQueuedRef.current = false
+        await loadSnapshotRef.current()
+      } while (loadQueuedRef.current)
+    } finally {
+      loadRunningRef.current = false
+    }
+  }, [])
+
   useEffect(() => {
     void load()
-  }, [load])
+  }, [load, loadSnapshot])
 
   useEffect(() => {
     if (!window.api) return

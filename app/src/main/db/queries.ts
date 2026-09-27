@@ -797,7 +797,11 @@ export function getSessions(
       SELECT 1
       FROM usage_events e
       WHERE e.provider = s.provider
-        AND e.session_id = s.id
+        AND e.session_id = CASE
+          WHEN s.id LIKE s.provider || ':%'
+            THEN substr(s.id, length(s.provider) + 2)
+          ELSE s.id
+        END
         AND (@startMs IS NULL OR e.ts_ms >= @startMs)
         AND (@endMs IS NULL OR e.ts_ms < @endMs)
         AND (@dayStartMs IS NULL OR e.ts_ms >= @dayStartMs)

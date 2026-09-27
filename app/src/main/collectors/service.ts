@@ -24,7 +24,7 @@ import {
 import { ensureRates, setPriceOverrides } from '../pricing/store'
 import { ensureFxRates } from '../pricing/fx'
 import { flushScanCache } from './cache'
-import { isProviderEnabled, type ProviderId } from '../../shared/providers'
+import { isProviderEnabled, providerMeta, type ProviderId } from '../../shared/providers'
 
 let registered = false
 let pollTimer: NodeJS.Timeout | null = null
@@ -34,13 +34,23 @@ let refreshAgain = false
 let watchers: FSWatcher[] = []
 const watchedProviders = new Set<ProviderId>()
 const sessionChangeTimers = new Map<ProviderId, NodeJS.Timeout>()
+const activeSessionRefreshes = new Set<ProviderId>()
+const rerunSessionRefreshes = new Set<ProviderId>()
+const lastSessionRefreshAt = new Map<ProviderId, number>()
 let quotaChangeTimer: NodeJS.Timeout | null = null
 let lastQuotaAttemptAt = 0
+let lastFullSessionRefreshAt = 0
 // Reactive file-watcher triggers (constant during active coding sessions) can
 // otherwise fire far more often than provider quota APIs tolerate, causing
 // repeated 429s and a live/stale flicker. The base poll timer already covers
 // the 15-60s cadence; this only throttles watcher-triggered refreshes.
 const MIN_REACTIVE_QUOTA_INTERVAL_MS = 20_000
+const SESSION_FALLBACK_INTERVAL_MS = 5 * 60_000
+const MIN_SESSION_REFRESH_INTERVAL_MS: Partial<Record<ProviderId, number>> = {
+  // OpenCode updates its db, wal and shm files for the same logical write.
+  // Reading the store more often than this adds churn without fresher UI.
+  opencode: 2_000
+}
 
 // Claude's /api/oauth/usage is an undocumented, reverse-engineered endpoint
 // with a much stricter rate limit than Grok/Codex's — the base 15-60s poll
@@ -193,6 +203,7 @@ export async function collectAllSessions(): Promise<{ upserted: number }> {
   }
 
   flushScanCache()
+  lastFullSessionRefreshAt = Date.now()
   broadcastChanged()
   return { upserted }
 }
@@ -269,7 +280,10 @@ export function startQuotaPolling(): void {
 
   const tick = async (): Promise<void> => {
     try {
-      await refreshEverything()
+      if (Date.now() - lastFullSessionRefreshAt >= SESSION_FALLBACK_INTERVAL_MS) {
+        await collectAllSessions()
+      }
+      await refreshAllQuotas()
     } catch {
       // ignore
     }
@@ -349,6 +363,8 @@ export function stopRealtimeWatchers(): void {
   watchedProviders.clear()
   for (const timer of sessionChangeTimers.values()) clearTimeout(timer)
   sessionChangeTimers.clear()
+  rerunSessionRefreshes.clear()
+  lastSessionRefreshAt.clear()
   if (quotaChangeTimer) clearTimeout(quotaChangeTimer)
   quotaChangeTimer = null
 }
@@ -410,14 +426,33 @@ export function classifyProviderChange(
 }
 
 function queueSessionRefresh(provider: ProviderId): void {
-  const pending = sessionChangeTimers.get(provider)
-  if (pending) clearTimeout(pending)
+  if (sessionChangeTimers.has(provider)) return
+  const minimumInterval = MIN_SESSION_REFRESH_INTERVAL_MS[provider] ?? 300
+  const elapsed = Date.now() - (lastSessionRefreshAt.get(provider) ?? 0)
+  const delay = Math.max(300, minimumInterval - elapsed)
   const timer = setTimeout(() => {
     sessionChangeTimers.delete(provider)
-    void collectProviderSessions(provider)
-    queueQuotaRefresh(750)
-  }, 300)
+    void runSessionRefresh(provider)
+  }, delay)
   sessionChangeTimers.set(provider, timer)
+}
+
+async function runSessionRefresh(provider: ProviderId): Promise<void> {
+  if (activeSessionRefreshes.has(provider)) {
+    rerunSessionRefreshes.add(provider)
+    return
+  }
+  activeSessionRefreshes.add(provider)
+  try {
+    do {
+      rerunSessionRefreshes.delete(provider)
+      await collectProviderSessions(provider)
+      lastSessionRefreshAt.set(provider, Date.now())
+    } while (rerunSessionRefreshes.delete(provider))
+    if (providerMeta(provider).reportsQuota) queueQuotaRefresh(750)
+  } finally {
+    activeSessionRefreshes.delete(provider)
+  }
 }
 
 function queueQuotaRefresh(delayMs: number): void {

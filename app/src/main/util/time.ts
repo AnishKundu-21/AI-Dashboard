@@ -9,6 +9,11 @@
 import type { UsageResolution } from '../../shared/types'
 
 const DAY_MS = 86_400_000
+const resolvedZoneCache = new Map<string, string>()
+const dayFormatterCache = new Map<string, Intl.DateTimeFormat>()
+const hourFormatterCache = new Map<string, Intl.DateTimeFormat>()
+const offsetFormatterCache = new Map<string, Intl.DateTimeFormat>()
+const usageBucketFormatterCache = new Map<string, (timestampMs: number) => string>()
 
 export type AnalyticsPeriodSelection =
   | { range_days: number; start_day?: never; end_day?: never }
@@ -30,37 +35,52 @@ export type ResolvedAnalyticsPeriod = {
 export type UsageBucketPoint = { key: string; startMs: number }
 
 export function resolveTimeZone(timezone: string | null | undefined): string {
+  const cacheKey = timezone || 'system'
+  const cached = resolvedZoneCache.get(cacheKey)
+  if (cached) return cached
   if (!timezone || timezone === 'system') {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+    const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+    resolvedZoneCache.set(cacheKey, resolved)
+    return resolved
   }
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format()
+    resolvedZoneCache.set(cacheKey, timezone)
     return timezone
   } catch {
+    resolvedZoneCache.set(cacheKey, 'UTC')
     return 'UTC'
   }
 }
 
 function makeFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = dayFormatterCache.get(timeZone)
+  if (cached) return cached
   try {
-    return new Intl.DateTimeFormat('en-CA', {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
       timeZone,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
     })
+    dayFormatterCache.set(timeZone, formatter)
+    return formatter
   } catch {
     // An unknown zone degrades to UTC rather than failing the whole scan.
-    return new Intl.DateTimeFormat('en-CA', {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'UTC',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
     })
+    dayFormatterCache.set(timeZone, formatter)
+    return formatter
   }
 }
 
 function makeHourFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = hourFormatterCache.get(timeZone)
+  if (cached) return cached
   const options: Intl.DateTimeFormatOptions = {
     timeZone,
     year: 'numeric',
@@ -70,9 +90,13 @@ function makeHourFormatter(timeZone: string): Intl.DateTimeFormat {
     hourCycle: 'h23'
   }
   try {
-    return new Intl.DateTimeFormat('en-CA', options)
+    const formatter = new Intl.DateTimeFormat('en-CA', options)
+    hourFormatterCache.set(timeZone, formatter)
+    return formatter
   } catch {
-    return new Intl.DateTimeFormat('en-CA', { ...options, timeZone: 'UTC' })
+    const formatter = new Intl.DateTimeFormat('en-CA', { ...options, timeZone: 'UTC' })
+    hourFormatterCache.set(timeZone, formatter)
+    return formatter
   }
 }
 
@@ -109,24 +133,36 @@ export function makeUsageBucketFormatter(
   resolution: UsageResolution
 ): (timestampMs: number) => string {
   const zone = resolveTimeZone(timezone)
+  const cacheKey = `${zone}\u0000${resolution}`
+  const cached = usageBucketFormatterCache.get(cacheKey)
+  if (cached) return cached
   const dayOf = makeDayFormatter(zone)
-  if (resolution === 'day') return dayOf
+  if (resolution === 'day') {
+    usageBucketFormatterCache.set(cacheKey, dayOf)
+    return dayOf
+  }
   if (resolution === 'hour') {
     const format = makeHourFormatter(zone)
-    return (timestampMs) => {
+    const formatter = (timestampMs: number) => {
       const parts = format.formatToParts(new Date(timestampMs))
       const value = (type: string) => parts.find((part) => part.type === type)?.value ?? '00'
       return `${value('year')}-${value('month')}-${value('day')} ${value('hour')}:00 ${offsetLabel(zoneOffsetMs(timestampMs, zone))}`
     }
+    usageBucketFormatterCache.set(cacheKey, formatter)
+    return formatter
   }
   if (resolution === 'month') {
-    return (timestampMs) => `${dayOf(timestampMs).slice(0, 7)}-01`
+    const formatter = (timestampMs: number) => `${dayOf(timestampMs).slice(0, 7)}-01`
+    usageBucketFormatterCache.set(cacheKey, formatter)
+    return formatter
   }
-  return (timestampMs) => {
+  const formatter = (timestampMs: number) => {
     const day = dayOf(timestampMs)
     const weekday = new Date(`${day}T00:00:00.000Z`).getUTCDay()
     return addCalendarDays(day, -((weekday + 6) % 7))
   }
+  usageBucketFormatterCache.set(cacheKey, formatter)
+  return formatter
 }
 
 /**
@@ -153,16 +189,21 @@ export function startOfDayMs(
 
 /** How far ahead of UTC `timeZone` runs at `timestampMs`, in ms. */
 export function zoneOffsetMs(timestampMs: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23'
-  }).formatToParts(new Date(timestampMs))
+  let formatter = offsetFormatterCache.get(timeZone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    })
+    offsetFormatterCache.set(timeZone, formatter)
+  }
+  const parts = formatter.formatToParts(new Date(timestampMs))
   const value = (type: string): number =>
     Number(parts.find((part) => part.type === type)?.value)
   return (
@@ -354,12 +395,14 @@ export function enumerateUsageBucketPoints(
     // Sampling actual instants lets us enumerate the variable-width hour
     // buckets made by 30-minute DST changes without inventing a wall-clock
     // time that never occurred. Fifteen minutes safely observes every modern
-    // IANA offset transition while remaining small beside the chart payload.
+    // IANA offset transition. Because the loop is chronological and starts at
+    // local midnight, the first sample for a key is also that bucket's real
+    // boundary. Re-resolving the same boundary through Intl for every sample
+    // made a seven-day hourly chart spend hundreds of milliseconds here.
     for (let cursor = startOfDayMs(fromDay, timezone); cursor < endMs; cursor += 15 * 60_000) {
       const key = bucketOf(cursor)
-      const startMs = usageBucketStartMs(cursor, timezone, 'hour')
       const existing = buckets.get(key)
-      if (!existing || startMs < existing.startMs) buckets.set(key, { key, startMs })
+      if (!existing || cursor < existing.startMs) buckets.set(key, { key, startMs: cursor })
     }
     return Array.from(buckets.values()).sort((a, b) => a.startMs - b.startMs)
   }
